@@ -4,6 +4,8 @@
 
 OpenRoll is a portable, human-readable file format for the **trajectories** ("rollouts") produced when an RL framework collects experience from an agent — especially when that agent is a language model. One JSONL line is one rollout. The format losslessly carries everything a PyTorch trainer needs for SFT, DPO, PPO, GRPO, and RLOO: prompts, completions, tool calls, rewards, logprobs, reference logprobs, values, advantages, returns, action masks, and GRPO group ids — without giving up the ability to `cat` the file and read it.
 
+> **In one line:** OpenRoll is to RL rollouts what RLDS / Minari are to gym episodes — except it speaks `messages` and `tool_call_id` natively, and unlike TRL's prompt-only inputs or OpenTelemetry GenAI's observability spans, it carries the per-token training signals that turn a recorded trajectory into a training batch. See [Related work](#related-work) for a full comparison.
+
 | What                         | Where                                                                                  |
 | ---------------------------- | -------------------------------------------------------------------------------------- |
 | Specification (the standard) | [`SPECIFICATION.md`](SPECIFICATION.md)                                                 |
@@ -271,6 +273,47 @@ Read [`SPECIFICATION.md`](SPECIFICATION.md) for the full standard. Highlights:
 
 ---
 
+## Related work
+
+The space splits cleanly into three buckets that all leave the same gap in the middle. OpenRoll fills it.
+
+| Format | Container | Scope | Per-token logprobs | GRPO `group_id` / advantages | Tool calls | Multi-turn | term/trunc split | Maturity |
+| --- | --- | --- | :---: | :---: | :---: | :---: | :---: | --- |
+| **OpenRoll** | JSONL | RL rollout for LLM training | ✅ | ✅ | ✅ (`tool_call_id`) | ✅ | ✅ | new |
+| [opentraces.ai](https://github.com/JayFarei/opentraces) | JSONL | Coding-agent trace publishing | ❌ | ❌ (session-id only) | ✅ | ✅ | terminal_state enum only | early v0.3 |
+| [cursor/agent-trace](https://github.com/cursor/agent-trace) | JSON | AI-vs-human code attribution | ❌ | ❌ | ❌ | ❌ | ❌ | RFC v0.1 |
+| [DeepMind RLDS](https://github.com/google-research/rlds) | TFDS / `tf.data` | Robotics & embodied offline RL | ❌ | ❌ | ❌ | ❌ | partial (`is_terminal`) | mature |
+| [Farama Minari](https://minari.farama.org/main/content/dataset_standards/) | HDF5 / Arrow | Offline gym RL | ❌ | ❌ | ❌ | ❌ | ✅ | mature, active |
+| D4RL | NumPy / HDF5 | Offline RL benchmarks | ❌ | ❌ | ❌ | ❌ | ✅ | **legacy → Minari** |
+| [HF TRL conventions](https://huggingface.co/docs/trl/dataset_formats) | Parquet / JSONL | SFT/DPO/PPO/GRPO **inputs** | ❌ (computed at train time) | ❌ (prompt-only) | ✅ | ✅ | ❌ | de-facto standard |
+| [OpenRLHF](https://github.com/OpenRLHF/OpenRLHF) | JSON | RL training inputs | ❌ | ❌ | ❌ | partial (`context_messages`) | ❌ | active |
+| [Inspect AI eval log](https://inspect.aisi.org.uk/eval-logs.html) | `.eval` binary / `.json` | UK AISI eval framework | ❌ | ❌ | ✅ | ✅ | ❌ | mature |
+| [OpenAI Evals](https://github.com/openai/evals) | JSONL | Eval inputs | ❌ | ❌ | via chat input | ✅ | ❌ | mature |
+| [OTel GenAI semconv](https://opentelemetry.io/docs/specs/semconv/gen-ai/) | OTLP spans | LLM observability | ❌ (`usage.*` only) | ❌ | ✅ | ✅ | ❌ | draft |
+| [Langfuse](https://langfuse.com/docs/tracing-data-model) / LangSmith / W&B Weave / [AgentOps](https://github.com/AgentOps-AI/agentops) | proprietary | LLM observability | ❌ | ❌ | ✅ | ✅ | ❌ | mature |
+| [MosaicML Streaming (MDS)](https://github.com/mosaicml/streaming) | MDS shards | Generic streaming container | n/a | n/a | n/a | n/a | n/a | mature container |
+| [Skywork-Reward](https://github.com/SkyworkAI/Skywork-Reward) | HF Parquet | Preference pairs (`chosen`/`rejected`) | ❌ | ❌ | ❌ | ✅ | ❌ | active |
+
+### Where OpenRoll fits
+
+1. **Classical offline-RL formats** (RLDS, Minari, D4RL) nail `terminations` / `truncations` and per-step `(observation, action, reward)` arrays — but were built for fixed-shape tensor envs. Minari's `EpisodeData` is literally `(observations, actions, rewards, terminations, truncations, infos)` and stops there. No `messages`, no `tool_call_id`, no `logprobs`.
+
+2. **LLM observability formats** (OpenTelemetry GenAI, Langfuse, LangSmith, Weave, AgentOps, opentraces.ai, cursor/agent-trace) are excellent at capturing the multi-turn + tool surface — but by design they record *one* policy's behavior for humans/dashboards, not training tensors. None of them carries `logprobs`, `ref_logprobs`, `values`, `advantages`, or `action_mask`.
+
+3. **HF TRL / OpenRLHF dataset conventions** (`prompt`, `chosen`, `rejected`, `messages`, `tools`) are the de-facto **training-input** format — but they're pre-rollout: they describe a prompt to roll out *from*, not the rollout itself. TRL's `GRPOTrainer` takes a prompt-only dataset; the group, advantages, and ref-logprobs are computed in-memory and discarded.
+
+OpenRoll fills the **post-rollout, pre-loss** slot none of those own — a serialized rollout that already contains every signal a GRPO/PPO/DPO trainer needs to compute its loss without re-running anything:
+
+- `logprobs` + `ref_logprobs` + `action_mask` → trainer-ready, no re-tokenize / re-score
+- `group_id` → GRPO grouping is a column, not a runtime accident
+- `terminated` / `truncated` split → borrows the offline-RL discipline LLM formats consistently drop
+- `tool_call_id` pairing + content-addressed `system_prompts` → keeps the multi-turn discipline RLDS / Minari can't express
+- JSONL → composes with MDS shards or HF Parquet downstream
+
+The closest neighbors are **RLDS / Minari** (same structural ambition, different domain) and **TRL conventions** (same domain, doesn't cover the rollout itself). MDS, Argilla, Skywork-Reward, and the observability formats are orthogonal — OpenRoll JSONL composes with all of them.
+
+---
+
 ## Project layout
 
 ```
@@ -340,4 +383,4 @@ See [`LICENSE`](LICENSE).
 
 ## Acknowledgements
 
-OpenRoll learned from prior art: [opentraces.ai](https://opentraces.ai) and [JayFarei/opentraces](https://github.com/JayFarei/opentraces) for agent-trace shape, [cursor/agent-trace](https://github.com/cursor/agent-trace) for code attribution and `provider/model-name` conventions, [Gymnasium](https://gymnasium.farama.org) for the terminated/truncated split, and [TRL](https://huggingface.co/docs/trl) / [verl](https://verl.readthedocs.io) / [OpenRLHF](https://github.com/OpenRLHF/OpenRLHF) for what trainers actually need to consume.
+OpenRoll learned from prior art: [opentraces.ai](https://opentraces.ai) and [JayFarei/opentraces](https://github.com/JayFarei/opentraces) for agent-trace shape, [cursor/agent-trace](https://github.com/cursor/agent-trace) for code attribution and `provider/model-name` conventions, [Gymnasium](https://gymnasium.farama.org) for the terminated/truncated split, [DeepMind RLDS](https://github.com/google-research/rlds) and [Farama Minari](https://minari.farama.org) for offline-RL dataset shape, and [TRL](https://huggingface.co/docs/trl) / [verl](https://verl.readthedocs.io) / [OpenRLHF](https://github.com/OpenRLHF/OpenRLHF) for what trainers actually need to consume. See [Related work](#related-work) for the full comparison.
