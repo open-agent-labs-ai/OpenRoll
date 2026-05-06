@@ -1,8 +1,12 @@
 """OpenRoll — open standard for recording RL rollouts (trajectories).
 
-See https://github.com/open-agent-labs/openroll for the full specification.
+OpenRoll is a framework-agnostic JSONL interchange format. The core SDK has
+no PyTorch / JAX / TensorFlow dependency; framework integrations are opt-in
+extras. See the README's "Framework adapters" section for sketches against
+TRL, verl, OpenRLHF, NeMo-RL, AReaL, slime, RLlib, Stable-Baselines3,
+Tianshou, TorchRL, CleanRL, Acme, Brax, PufferLib, Minari, and RLDS.
 
-Quick start:
+Quick start (no framework needed):
 
     import openroll as orl
 
@@ -17,9 +21,22 @@ Quick start:
     # validate
     orl.validate_file("rollouts.openroll.jsonl")
 
-    # PyTorch
-    from openroll.torch import RolloutDataset
-    ds = RolloutDataset("rollouts.openroll.jsonl")
+Optional: PyTorch DataLoader integration (requires `pip install openroll[torch]`):
+
+    from openroll.torch import RolloutStepDataset, pad_and_collate
+    ds = RolloutStepDataset("rollouts.openroll.jsonl")
+
+Optional: HuggingFace Datasets bridge (feeds TRL / ms-swift / Open-Instruct,
+requires `pip install openroll[hf]`):
+
+    from openroll.adapters import to_hf_dataset
+    ds = to_hf_dataset(orl.read("rollouts/"), view="step")
+
+For JAX / TensorFlow / non-Python consumers, parse the JSONL with the
+JSON library of your choice — there is no Python on the wire. See the
+JSON Schema at schema/openroll-v0.1.0.schema.json.
+
+See https://github.com/open-agent-labs-ai/OpenRoll for the full specification.
 """
 from openroll.models import (
     Action,
