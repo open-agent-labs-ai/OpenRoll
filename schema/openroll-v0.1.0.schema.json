@@ -1,0 +1,411 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://openroll.org/schema/v0.1.0/rollout.schema.json",
+  "title": "OpenRoll Rollout",
+  "description": "OpenRoll v0.1.0 — open standard for recording RL rollouts (trajectories) produced by RL frameworks for training language models. One rollout = one episode = one JSONL line.",
+  "type": "object",
+  "required": ["openroll_version", "rollout_id", "created_at", "task", "agent", "steps"],
+  "additionalProperties": false,
+  "properties": {
+    "openroll_version": {
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(?:-[0-9A-Za-z.-]+)?$",
+      "description": "Semver of the OpenRoll spec this record conforms to. Required."
+    },
+    "rollout_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Globally unique id for this rollout. UUIDv4 or content hash recommended."
+    },
+    "group_id": {
+      "type": ["string", "null"],
+      "description": "Optional group identifier. All rollouts that share a baseline (GRPO/RLOO group, or N-best sampling for the same prompt) MUST share a group_id."
+    },
+    "parent_rollout_id": {
+      "type": ["string", "null"],
+      "description": "Optional pointer to a parent rollout when this rollout was produced by a sub-agent."
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "RFC 3339 timestamp at start of rollout."
+    },
+    "finished_at": {
+      "type": ["string", "null"],
+      "format": "date-time",
+      "description": "RFC 3339 timestamp at end of rollout."
+    },
+    "lifecycle": {
+      "type": "string",
+      "enum": ["provisional", "final"],
+      "default": "final",
+      "description": "'provisional' = subject to change (online rollouts being relabeled); 'final' = immutable."
+    },
+    "task": { "$ref": "#/$defs/Task" },
+    "agent": { "$ref": "#/$defs/Agent" },
+    "environment": { "$ref": "#/$defs/Environment" },
+    "policy": { "$ref": "#/$defs/Policy" },
+    "reference_policy": { "$ref": "#/$defs/Policy" },
+    "system_prompts": {
+      "type": "object",
+      "description": "Content-addressed dictionary of system prompts used in this rollout. Keys are sha256 hashes; values are the prompt text. Steps and messages reference prompts by hash to avoid duplication.",
+      "additionalProperties": { "type": "string" }
+    },
+    "tools": {
+      "type": "array",
+      "description": "Tool definitions available to the agent during this rollout.",
+      "items": { "$ref": "#/$defs/ToolDefinition" }
+    },
+    "messages": {
+      "type": "array",
+      "description": "Optional chat-style view of the rollout (system/user/assistant/tool turns). Recommended for SFT/DPO compatibility. May be derived from steps.",
+      "items": { "$ref": "#/$defs/Message" }
+    },
+    "steps": {
+      "type": "array",
+      "description": "Ordered list of RL steps. This is the primary, normative trajectory representation. Each step pairs an action with reward and optional training signals (logprobs, values, advantages).",
+      "items": { "$ref": "#/$defs/Step" }
+    },
+    "outcome": { "$ref": "#/$defs/Outcome" },
+    "metrics": { "$ref": "#/$defs/Metrics" },
+    "tokenizer": { "$ref": "#/$defs/Tokenizer" },
+    "tags": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Free-form tags for filtering."
+    },
+    "metadata": {
+      "type": "object",
+      "description": "Open extension dictionary. Reverse-DNS keys (e.g. 'org.example.x_field') for vendor extensions; non-namespaced keys are reserved for future spec evolution.",
+      "additionalProperties": true
+    }
+  },
+  "$defs": {
+    "Task": {
+      "type": "object",
+      "description": "What the agent is being asked to do, and how the answer (if any) will be checked.",
+      "additionalProperties": false,
+      "properties": {
+        "task_id": { "type": ["string", "null"] },
+        "description": { "type": "string", "description": "Human-readable description of the task." },
+        "instruction": { "type": ["string", "null"], "description": "Verbatim instruction given to the agent (if distinct from description)." },
+        "dataset": { "type": ["string", "null"], "description": "Dataset name (e.g. 'math', 'swe-bench-verified')." },
+        "dataset_split": { "type": ["string", "null"] },
+        "dataset_index": { "type": ["integer", "null"] },
+        "expected_answer": { "type": ["string", "null"], "description": "Ground-truth answer for verifiable-reward tasks." },
+        "rubric": { "type": ["string", "null"], "description": "Judge rubric or grading criteria." },
+        "task_metadata": { "type": "object", "additionalProperties": true }
+      },
+      "required": ["description"]
+    },
+    "Agent": {
+      "type": "object",
+      "description": "Identity of the agent that produced this rollout.",
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string", "description": "Agent name (e.g. 'my-rl-agent', 'claude-code')." },
+        "version": { "type": ["string", "null"] },
+        "model": { "type": ["string", "null"], "description": "Model identifier in models.dev convention 'provider/model-name' (e.g. 'anthropic/claude-opus-4-7')." },
+        "role": { "type": ["string", "null"], "description": "Agent role for hierarchical agents: 'main', 'planner', 'critic', 'subagent', etc." }
+      },
+      "required": ["name"]
+    },
+    "Environment": {
+      "type": "object",
+      "description": "The environment the rollout was collected in.",
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string", "description": "Environment name (e.g. 'gymnasium/CartPole-v1', 'swe-bench-verified', 'browsergym/webarena')." },
+        "version": { "type": ["string", "null"] },
+        "seed": { "type": ["integer", "null"] },
+        "observation_space": { "type": ["object", "null"], "description": "Optional descriptor of the observation space.", "additionalProperties": true },
+        "action_space": { "type": ["object", "null"], "description": "Optional descriptor of the action space.", "additionalProperties": true },
+        "params": { "type": "object", "additionalProperties": true, "description": "Environment configuration parameters used at reset()." }
+      },
+      "required": ["name"]
+    },
+    "Policy": {
+      "type": "object",
+      "description": "Description of a policy (rollout-time or reference). Use 'policy' for the policy that generated this rollout; use 'reference_policy' for the frozen reference used in KL-regularized objectives (PPO, GRPO).",
+      "additionalProperties": false,
+      "properties": {
+        "model_id": { "type": "string", "description": "Model identifier ('provider/model-name' or HF repo id)." },
+        "revision": { "type": ["string", "null"], "description": "Specific revision/commit/sha of the model weights." },
+        "parameters": { "type": ["integer", "null"], "description": "Approximate parameter count, in units of parameters." },
+        "sampling": { "$ref": "#/$defs/SamplingParams" },
+        "metadata": { "type": "object", "additionalProperties": true }
+      },
+      "required": ["model_id"]
+    },
+    "SamplingParams": {
+      "type": "object",
+      "description": "Decoding/sampling parameters used to generate actions.",
+      "additionalProperties": true,
+      "properties": {
+        "temperature": { "type": ["number", "null"] },
+        "top_p": { "type": ["number", "null"] },
+        "top_k": { "type": ["integer", "null"] },
+        "min_p": { "type": ["number", "null"] },
+        "max_tokens": { "type": ["integer", "null"] },
+        "stop_sequences": { "type": ["array", "null"], "items": { "type": "string" } },
+        "presence_penalty": { "type": ["number", "null"] },
+        "frequency_penalty": { "type": ["number", "null"] },
+        "repetition_penalty": { "type": ["number", "null"] },
+        "seed": { "type": ["integer", "null"] }
+      }
+    },
+    "Tokenizer": {
+      "type": "object",
+      "description": "Tokenizer used to produce token_ids and token_logprobs in this rollout. Required if any step contains token-level fields.",
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string", "description": "Tokenizer identifier (e.g. 'meta-llama/Llama-3.1-8B', 'cl100k_base')." },
+        "revision": { "type": ["string", "null"] },
+        "vocab_size": { "type": ["integer", "null"] }
+      },
+      "required": ["name"]
+    },
+    "ToolDefinition": {
+      "type": "object",
+      "description": "Definition of a tool that was made available to the agent. Mirrors OpenAI tool schema.",
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string" },
+        "description": { "type": ["string", "null"] },
+        "input_schema": { "type": ["object", "null"], "description": "JSON Schema for tool arguments.", "additionalProperties": true },
+        "output_schema": { "type": ["object", "null"], "additionalProperties": true }
+      },
+      "required": ["name"]
+    },
+    "ContentPart": {
+      "type": "object",
+      "description": "One part of a multipart message or tool result. Exactly one of text/image_url/audio_url/resource_uri/json_value SHOULD be set, matching 'type'.",
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": ["text", "image", "audio", "resource", "json"]
+        },
+        "text": { "type": ["string", "null"] },
+        "image_url": { "type": ["string", "null"], "description": "URL or data URI of an image." },
+        "audio_url": { "type": ["string", "null"] },
+        "resource_uri": { "type": ["string", "null"], "description": "Reference to an external resource (e.g. a file in the bundle)." },
+        "json_value": { "description": "Arbitrary structured value when type='json'." },
+        "mime_type": { "type": ["string", "null"] }
+      },
+      "required": ["type"]
+    },
+    "ToolCall": {
+      "type": "object",
+      "description": "Invocation of a tool by the agent. 'id' MUST be unique within the rollout and is referenced by ToolResult.tool_call_id.",
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "arguments": { "type": "object", "additionalProperties": true, "description": "Parsed tool arguments. If the upstream provider only emits a JSON-string, parse it here; preserve the raw string in metadata if needed." },
+        "type": { "type": "string", "enum": ["function", "mcp", "code", "builtin"], "default": "function" },
+        "started_at": { "type": ["string", "null"], "format": "date-time" },
+        "duration_ms": { "type": ["integer", "null"] }
+      },
+      "required": ["id", "name"]
+    },
+    "ToolResult": {
+      "type": "object",
+      "description": "Result of a tool invocation. 'tool_call_id' MUST match the corresponding ToolCall.id.",
+      "additionalProperties": false,
+      "properties": {
+        "tool_call_id": { "type": "string" },
+        "content": { "type": "array", "items": { "$ref": "#/$defs/ContentPart" } },
+        "is_error": { "type": "boolean", "default": false },
+        "summary": { "type": ["string", "null"], "description": "Optional short summary of the result for downstream readers." },
+        "metadata": { "type": "object", "additionalProperties": true }
+      },
+      "required": ["tool_call_id", "content"]
+    },
+    "Message": {
+      "type": "object",
+      "description": "Chat-style view of a single turn. Optional. Provided for SFT/DPO compatibility; the canonical RL representation lives under 'steps'.",
+      "additionalProperties": false,
+      "properties": {
+        "index": { "type": "integer", "minimum": 0 },
+        "role": { "type": "string", "enum": ["system", "user", "assistant", "tool", "developer"] },
+        "name": { "type": ["string", "null"] },
+        "content": { "type": "array", "items": { "$ref": "#/$defs/ContentPart" } },
+        "reasoning": { "type": ["string", "null"], "description": "Chain-of-thought / reasoning content separated from final response." },
+        "tool_calls": { "type": ["array", "null"], "items": { "$ref": "#/$defs/ToolCall" } },
+        "tool_call_id": { "type": ["string", "null"], "description": "For role='tool' messages, references a ToolCall.id." },
+        "system_prompt_hash": { "type": ["string", "null"], "description": "Reference into rollout.system_prompts." },
+        "step_index": { "type": ["integer", "null"], "description": "Back-reference to the step that produced this message." }
+      },
+      "required": ["role", "content"]
+    },
+    "Step": {
+      "type": "object",
+      "description": "A single RL step. Combines the agent's action with the environment's reward and optional training signals (logprobs, values, advantages). For LLM rollouts, an action is typically one assistant turn (text + tool calls).",
+      "additionalProperties": false,
+      "properties": {
+        "step_index": { "type": "integer", "minimum": 0 },
+        "role": {
+          "type": "string",
+          "enum": ["agent", "user", "tool", "env", "system"],
+          "description": "Origin of this step. 'agent' = action by the policy; 'env'/'tool'/'user' = exogenous step contributing only observation/reward."
+        },
+        "observation": {
+          "description": "Environment observation prior to the action. Free-form (string for text envs; dict for structured envs; can reference resource_uri for large blobs).",
+          "anyOf": [
+            { "type": "string" },
+            { "type": "number" },
+            { "type": "integer" },
+            { "type": "boolean" },
+            { "type": "object", "additionalProperties": true },
+            { "type": "array" },
+            { "type": "null" }
+          ]
+        },
+        "action": { "$ref": "#/$defs/Action" },
+        "tool_calls": { "type": "array", "items": { "$ref": "#/$defs/ToolCall" } },
+        "tool_results": { "type": "array", "items": { "$ref": "#/$defs/ToolResult" } },
+        "reward": { "type": ["number", "null"], "description": "Scalar reward attributed to this step." },
+        "reward_components": {
+          "type": "object",
+          "description": "Decomposed reward signals. Keys are component names, values are floats. Sum need not equal 'reward' — agencies may apply weighting.",
+          "additionalProperties": { "type": "number" }
+        },
+        "terminated": { "type": "boolean", "default": false, "description": "MDP-terminal: episode ended in a terminal state (no value bootstrap)." },
+        "truncated": { "type": "boolean", "default": false, "description": "Externally cut off (timelimit, budget exhausted) — value SHOULD still bootstrap." },
+        "value": { "type": ["number", "null"], "description": "Critic value V(s) at this step under the rollout policy." },
+        "advantage": { "type": ["number", "null"], "description": "Advantage estimate (e.g. GAE, group-relative) for this step." },
+        "return_": { "type": ["number", "null"], "description": "Monte-Carlo or bootstrapped return at this step." },
+        "kl_to_ref": { "type": ["number", "null"], "description": "KL(rollout policy || reference policy) at this step." },
+        "logprob": { "type": ["number", "null"], "description": "Sum log-prob of the action under the rollout policy. For LLM steps, this is the sum of token log-probs over the generated tokens." },
+        "ref_logprob": { "type": ["number", "null"], "description": "Sum log-prob under the reference policy." },
+        "token_ids": { "type": ["array", "null"], "items": { "type": "integer" }, "description": "Action token ids (per the rollout's tokenizer)." },
+        "prompt_token_ids": { "type": ["array", "null"], "items": { "type": "integer" }, "description": "Prompt/context token ids fed into the policy at this step." },
+        "attention_mask": { "type": ["array", "null"], "items": { "type": "integer", "enum": [0, 1] } },
+        "action_mask": { "type": ["array", "null"], "items": { "type": "integer", "enum": [0, 1] }, "description": "1 for tokens generated by the policy, 0 for prompt/tool-output tokens. Same length as token_ids+prompt_token_ids when present." },
+        "token_logprobs": { "type": ["array", "null"], "items": { "type": "number" }, "description": "Per-token log-prob under the rollout policy. Length == len(token_ids)." },
+        "token_ref_logprobs": { "type": ["array", "null"], "items": { "type": "number" } },
+        "token_rewards": { "type": ["array", "null"], "items": { "type": "number" }, "description": "Per-token rewards for dense-reward shaping." },
+        "token_values": { "type": ["array", "null"], "items": { "type": "number" } },
+        "token_advantages": { "type": ["array", "null"], "items": { "type": "number" } },
+        "token_entropy": { "type": ["array", "null"], "items": { "type": "number" } },
+        "token_topk": {
+          "type": ["array", "null"],
+          "description": "Per-token top-k alternatives (token_id, logprob).",
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "token_id": { "type": "integer" },
+                "logprob": { "type": "number" }
+              },
+              "required": ["token_id", "logprob"]
+            }
+          }
+        },
+        "system_prompt_hash": { "type": ["string", "null"] },
+        "tools_available": {
+          "type": ["array", "null"],
+          "items": { "type": "string" },
+          "description": "Names of tools available at this step (subset of rollout.tools)."
+        },
+        "tokens_used": { "$ref": "#/$defs/TokenUsage" },
+        "wall_time_ms": { "type": ["integer", "null"] },
+        "timestamp": { "type": ["string", "null"], "format": "date-time" },
+        "info": {
+          "type": "object",
+          "additionalProperties": true,
+          "description": "Gymnasium-style free-form info dict (debugging, hidden state, per-component reward decomposition)."
+        }
+      },
+      "required": ["step_index", "role"]
+    },
+    "Action": {
+      "type": "object",
+      "description": "The agent's action. For LLM rollouts, 'text' carries the generated text. For non-LLM/RL envs, set 'value' (and optionally 'type').",
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": ["text", "discrete", "continuous", "structured", "noop"],
+          "default": "text"
+        },
+        "text": { "type": ["string", "null"], "description": "Generated text (for LLM agents)." },
+        "value": {
+          "description": "Discrete (int) or continuous (number/array) action value.",
+          "anyOf": [
+            { "type": "integer" },
+            { "type": "number" },
+            { "type": "array" },
+            { "type": "object" },
+            { "type": "null" }
+          ]
+        },
+        "reasoning": { "type": ["string", "null"], "description": "Chain-of-thought / reasoning emitted alongside the action." }
+      }
+    },
+    "TokenUsage": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "input_tokens": { "type": ["integer", "null"] },
+        "output_tokens": { "type": ["integer", "null"] },
+        "cache_read_tokens": { "type": ["integer", "null"] },
+        "cache_creation_tokens": { "type": ["integer", "null"] },
+        "reasoning_tokens": { "type": ["integer", "null"] }
+      }
+    },
+    "Outcome": {
+      "type": "object",
+      "description": "Terminal outcome of the rollout.",
+      "additionalProperties": false,
+      "properties": {
+        "success": { "type": "boolean" },
+        "terminal_state": {
+          "type": "string",
+          "enum": ["goal_reached", "failure", "timeout", "interrupted", "error", "abandoned"]
+        },
+        "final_reward": { "type": ["number", "null"], "description": "Episode return (sum of step rewards) or task-level scalar if step rewards are absent." },
+        "reward_source": {
+          "type": "string",
+          "enum": ["rl_environment", "verifier", "judge", "human", "rule_based", "preference", "mixed"]
+        },
+        "judge": { "$ref": "#/$defs/Judge" },
+        "description": { "type": ["string", "null"] }
+      }
+    },
+    "Judge": {
+      "type": "object",
+      "description": "Metadata for a judge or verifier that produced the reward signal.",
+      "additionalProperties": false,
+      "properties": {
+        "kind": { "type": "string", "enum": ["llm", "rule", "human", "model", "ensemble"] },
+        "model": { "type": ["string", "null"], "description": "If kind='llm' or 'model', the judge model identifier." },
+        "rubric": { "type": ["string", "null"] },
+        "raw_response": { "type": ["string", "null"] },
+        "metadata": { "type": "object", "additionalProperties": true }
+      }
+    },
+    "Metrics": {
+      "type": "object",
+      "description": "Aggregate metrics computed over the rollout. May be derived from steps but stored for fast filtering.",
+      "additionalProperties": true,
+      "properties": {
+        "total_steps": { "type": ["integer", "null"] },
+        "episode_return": { "type": ["number", "null"] },
+        "episode_length": { "type": ["integer", "null"] },
+        "input_tokens": { "type": ["integer", "null"] },
+        "output_tokens": { "type": ["integer", "null"] },
+        "cache_read_tokens": { "type": ["integer", "null"] },
+        "cache_creation_tokens": { "type": ["integer", "null"] },
+        "total_tokens": { "type": ["integer", "null"] },
+        "wall_time_seconds": { "type": ["number", "null"] },
+        "tool_call_count": { "type": ["integer", "null"] },
+        "error_count": { "type": ["integer", "null"] },
+        "cost_usd": { "type": ["number", "null"] }
+      }
+    }
+  }
+}

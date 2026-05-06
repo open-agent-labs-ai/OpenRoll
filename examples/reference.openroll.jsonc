@@ -1,0 +1,331 @@
+// =============================================================================
+//  OpenRoll v0.1.0 — Annotated Reference Record
+// =============================================================================
+//
+//  This file is the human-readable reference for the OpenRoll trajectory
+//  format. It is JSONC (JSON with comments) and is intended for documentation
+//  only — it is NOT itself a valid OpenRoll record. The canonical OpenRoll
+//  wire format is JSONL (one strict-JSON Rollout record per line).
+//
+//  To validate / consume actual rollouts, see:
+//    - schema/openroll-v0.1.0.schema.json   (formal JSON Schema)
+//    - examples/single-turn-math.openroll.jsonl
+//    - examples/multi-turn-tool-use.openroll.jsonl
+//    - examples/grpo-group.openroll.jsonl
+//
+//  Conventions used below:
+//    - REQUIRED fields are flagged at the field.
+//    - All timestamps are RFC 3339 / ISO 8601 with timezone.
+//    - "model" identifiers follow the models.dev convention "provider/model".
+//    - System prompts are content-addressed by sha256 hash to deduplicate
+//      across long agent conversations.
+//    - tool_call.id <-> tool_result.tool_call_id pairs invocations to results,
+//      mirroring OpenAI/MCP conventions.
+//
+// =============================================================================
+
+{
+  // -------------------------------------------------------------------------
+  // Top-level identity & versioning
+  // -------------------------------------------------------------------------
+
+  // REQUIRED. Semver of the OpenRoll spec this record conforms to. Readers
+  // SHOULD reject records with an unknown major version.
+  "openroll_version": "0.1.0",
+
+  // REQUIRED. Globally unique identifier. UUIDv4 or content-hash recommended.
+  "rollout_id": "01J9F8GT5K3X2QZP4V8M2H7CRA",
+
+  // OPTIONAL. Group identifier. All rollouts that share a baseline (e.g. a
+  // GRPO/RLOO group, or N-best samples for the same prompt) MUST share the
+  // same group_id. Trainers use this to compute group-relative advantages.
+  "group_id": "grp_2026-05-05_math_001",
+
+  // OPTIONAL. If this rollout was produced by a sub-agent invoked from a
+  // parent agent, point at the parent rollout's id. Enables hierarchical
+  // agent traces.
+  "parent_rollout_id": null,
+
+  // REQUIRED. RFC 3339 timestamp at the start of the rollout.
+  "created_at": "2026-05-05T17:42:11.123Z",
+
+  // OPTIONAL. RFC 3339 timestamp at the end of the rollout.
+  "finished_at": "2026-05-05T17:42:14.987Z",
+
+  // OPTIONAL. "provisional" = subject to change (e.g. online rollouts being
+  // re-judged); "final" = immutable. Defaults to "final".
+  "lifecycle": "final",
+
+  // -------------------------------------------------------------------------
+  // Task — what the agent was asked to do
+  // -------------------------------------------------------------------------
+  "task": {
+    "task_id": "math/algebra/0042",
+    "description": "Solve the equation 3x + 7 = 22 for x.",        // REQUIRED
+    "instruction": "Solve the equation 3x + 7 = 22 for x. Return only the final number.",
+    "dataset": "openroll-math-v1",
+    "dataset_split": "train",
+    "dataset_index": 42,
+    "expected_answer": "5",                                         // for verifiable rewards
+    "rubric": "Final answer must equal 5 (numeric equality).",
+    "task_metadata": {
+      "difficulty": "easy",
+      "topic": "linear_equations"
+    }
+  },
+
+  // -------------------------------------------------------------------------
+  // Agent — who produced the rollout
+  // -------------------------------------------------------------------------
+  "agent": {
+    "name": "openroll-example-agent",          // REQUIRED
+    "version": "0.1.0",
+    "model": "anthropic/claude-opus-4-7",      // models.dev "provider/model"
+    "role": "main"                              // main | planner | critic | subagent | ...
+  },
+
+  // -------------------------------------------------------------------------
+  // Environment — where the rollout was collected
+  // -------------------------------------------------------------------------
+  "environment": {
+    "name": "openroll-math-env",                // REQUIRED
+    "version": "1.0.0",
+    "seed": 1337,
+    "observation_space": { "type": "text" },
+    "action_space": { "type": "text" },
+    "params": {
+      "max_turns": 4,
+      "verifier": "exact_match"
+    }
+  },
+
+  // -------------------------------------------------------------------------
+  // Policy — the policy that generated this rollout
+  // -------------------------------------------------------------------------
+  "policy": {
+    "model_id": "meta-llama/Llama-3.1-8B-Instruct",   // REQUIRED
+    "revision": "0e9e39f249a16976918f6564b8830bc894c89659",
+    "parameters": 8030261248,
+    "sampling": {
+      "temperature": 0.7,
+      "top_p": 0.95,
+      "top_k": 50,
+      "max_tokens": 256,
+      "stop_sequences": ["</answer>"],
+      "seed": 42
+    }
+  },
+
+  // OPTIONAL. The frozen reference policy used for KL regularization (PPO,
+  // GRPO). Identical shape to "policy".
+  "reference_policy": {
+    "model_id": "meta-llama/Llama-3.1-8B-Instruct",
+    "revision": "0e9e39f249a16976918f6564b8830bc894c89659"
+  },
+
+  // -------------------------------------------------------------------------
+  // System prompts — content-addressed to avoid duplication across long
+  // multi-turn rollouts. Steps and messages reference prompts by hash.
+  // -------------------------------------------------------------------------
+  "system_prompts": {
+    "sha256:5b6e1e7f1a7d3b2e1c9a6e8f0d4e3a2b5c7d8e9f0a1b2c3d4e5f6a7b8c9d0e1f":
+      "You are a careful mathematical reasoning agent. Show brief work, then write your final answer between <answer> and </answer>."
+  },
+
+  // -------------------------------------------------------------------------
+  // Tools — definitions of tools made available to the agent
+  // -------------------------------------------------------------------------
+  "tools": [
+    {
+      "name": "calculator",
+      "description": "Evaluate a Python arithmetic expression and return the numeric result.",
+      "input_schema": {
+        "type": "object",
+        "properties": { "expression": { "type": "string" } },
+        "required": ["expression"]
+      },
+      "output_schema": { "type": "number" }
+    }
+  ],
+
+  // -------------------------------------------------------------------------
+  // Tokenizer — required if any step contains token-level fields
+  // -------------------------------------------------------------------------
+  "tokenizer": {
+    "name": "meta-llama/Llama-3.1-8B-Instruct",
+    "vocab_size": 128256
+  },
+
+  // -------------------------------------------------------------------------
+  // Messages — OPTIONAL chat-style view of the rollout. Provided for SFT/DPO
+  // compatibility. The canonical RL representation lives under "steps".
+  // Messages MAY be derived from steps or stored directly.
+  // -------------------------------------------------------------------------
+  "messages": [
+    {
+      "index": 0,
+      "role": "system",
+      "content": [{ "type": "text", "text": "You are a careful mathematical reasoning agent..." }],
+      "system_prompt_hash":
+        "sha256:5b6e1e7f1a7d3b2e1c9a6e8f0d4e3a2b5c7d8e9f0a1b2c3d4e5f6a7b8c9d0e1f"
+    },
+    {
+      "index": 1,
+      "role": "user",
+      "content": [{ "type": "text", "text": "Solve the equation 3x + 7 = 22 for x. Return only the final number." }]
+    },
+    {
+      "index": 2,
+      "role": "assistant",
+      "content": [{ "type": "text", "text": "I'll subtract 7 from both sides, giving 3x = 15. Then divide by 3.\n<answer>5</answer>" }],
+      "reasoning": "Linear equation: subtract 7, divide by 3.",
+      "step_index": 0
+    }
+  ],
+
+  // -------------------------------------------------------------------------
+  // Steps — REQUIRED. Ordered list of RL steps. Primary trajectory record.
+  //
+  // For an LLM rollout, an "agent" step typically pairs:
+  //    observation (the prompt context)
+  //  + action       (one assistant turn — text and/or tool calls)
+  //  + reward       (scalar attributed to this step)
+  //  + training signals (logprobs, values, advantages — populated by the
+  //                      RL trainer or directly by the rollout collector)
+  //
+  // For an environment/tool step (role != "agent"), most fields are null —
+  // the step exists to advance the trajectory and carry observation/reward.
+  // -------------------------------------------------------------------------
+  "steps": [
+    {
+      "step_index": 0,
+      "role": "agent",                                 // agent | env | tool | user | system
+
+      // The observation BEFORE the action. Free-form: string for text envs,
+      // dict for structured envs, or null when redundant with prompt_token_ids.
+      "observation": "Solve the equation 3x + 7 = 22 for x. Return only the final number.",
+
+      // The agent's action. For LLM agents, set type="text" and use "text".
+      "action": {
+        "type": "text",
+        "text": "I'll subtract 7 from both sides, giving 3x = 15. Then divide by 3.\n<answer>5</answer>",
+        "reasoning": "Linear equation: subtract 7, divide by 3."
+      },
+
+      // Tool calls and their paired results (paired by id <-> tool_call_id).
+      "tool_calls": [],
+      "tool_results": [],
+
+      // Scalar step reward.
+      "reward": 1.0,
+
+      // Decomposed reward signals (sum need not equal "reward").
+      "reward_components": {
+        "verifier_match": 1.0,
+        "format_bonus": 0.0
+      },
+
+      // Gymnasium-style termination split: "terminated" = MDP terminal;
+      // "truncated" = external cutoff (timelimit). Use BOTH, not a single
+      // "done" flag — value bootstrapping behaves differently for each.
+      "terminated": true,
+      "truncated": false,
+
+      // Training signals — populate any subset.
+      "value": 0.83,
+      "advantage": 0.42,
+      "return_": 1.0,                  // trailing underscore avoids the Python keyword
+      "kl_to_ref": 0.012,
+
+      // Sum log-prob of the action under each policy.
+      "logprob": -3.42,
+      "ref_logprob": -3.51,
+
+      // Token-level arrays. Lengths MUST match (see SPECIFICATION.md §6).
+      "token_ids":           [128000, 40,  3358,  22, 7, 22, 765, 7, 765, 18, 14, 765, 22, 14, 18, 765, 20],
+      "token_logprobs":      [-0.10, -0.32, -0.15, -0.50, -0.20, -0.18, -0.40, -0.12, -0.05, -0.22, -0.18, -0.30, -0.45, -0.18, -0.06, -0.10, -0.11],
+      "token_ref_logprobs":  [-0.11, -0.33, -0.14, -0.51, -0.21, -0.18, -0.41, -0.12, -0.05, -0.22, -0.18, -0.31, -0.46, -0.18, -0.06, -0.10, -0.12],
+      "token_rewards":       [ 0.00,  0.00,  0.00,  0.00,  0.00,  0.00,  0.00,  0.00,  0.00,  0.00,  0.00,  0.00,  0.00,  0.00,  0.00,  0.00,  1.00],
+      "token_entropy":       [ 0.42,  0.31,  0.28,  0.39,  0.22,  0.19,  0.26,  0.18,  0.10,  0.21,  0.20,  0.27,  0.34,  0.19,  0.09,  0.12,  0.13],
+
+      // Optional prompt_token_ids and action_mask for full reproducibility:
+      // action_mask is 1 for tokens the policy generated, 0 elsewhere.
+      "prompt_token_ids":    null,
+      "action_mask":         null,
+      "attention_mask":      null,
+      "token_values":        null,
+      "token_advantages":    null,
+      "token_topk":          null,
+
+      "system_prompt_hash":
+        "sha256:5b6e1e7f1a7d3b2e1c9a6e8f0d4e3a2b5c7d8e9f0a1b2c3d4e5f6a7b8c9d0e1f",
+      "tools_available": ["calculator"],
+
+      "tokens_used": {
+        "input_tokens": 64,
+        "output_tokens": 17,
+        "cache_read_tokens": 0,
+        "cache_creation_tokens": 0,
+        "reasoning_tokens": 0
+      },
+
+      "wall_time_ms": 412,
+      "timestamp": "2026-05-05T17:42:14.500Z",
+
+      // Free-form Gymnasium-style debugging dict.
+      "info": {
+        "verifier_decision": "exact_match",
+        "rendered_answer": "5"
+      }
+    }
+  ],
+
+  // -------------------------------------------------------------------------
+  // Outcome — terminal summary
+  // -------------------------------------------------------------------------
+  "outcome": {
+    "success": true,
+    "terminal_state": "goal_reached",      // goal_reached | failure | timeout | interrupted | error | abandoned
+    "final_reward": 1.0,
+    "reward_source": "verifier",            // rl_environment | verifier | judge | human | rule_based | preference | mixed
+    "judge": {
+      "kind": "rule",
+      "rubric": "Numeric exact match against expected_answer."
+    },
+    "description": "Correct numeric answer."
+  },
+
+  // -------------------------------------------------------------------------
+  // Aggregate metrics — derived from steps but stored for fast filtering
+  // -------------------------------------------------------------------------
+  "metrics": {
+    "total_steps": 1,
+    "episode_return": 1.0,
+    "episode_length": 1,
+    "input_tokens": 64,
+    "output_tokens": 17,
+    "cache_read_tokens": 0,
+    "cache_creation_tokens": 0,
+    "total_tokens": 81,
+    "wall_time_seconds": 0.412,
+    "tool_call_count": 0,
+    "error_count": 0,
+    "cost_usd": 0.0008
+  },
+
+  // -------------------------------------------------------------------------
+  // Tags — free-form, used for dataset filtering / curriculum / sampling
+  // -------------------------------------------------------------------------
+  "tags": ["math", "algebra", "linear_equations", "easy"],
+
+  // -------------------------------------------------------------------------
+  // Metadata — open extension dictionary.
+  //
+  // Reserve non-namespaced keys for future spec evolution; vendor extensions
+  // MUST use reverse-DNS keys (e.g. "org.openagentlabs.x_internal").
+  // -------------------------------------------------------------------------
+  "metadata": {
+    "org.openagentlabs.collector_version": "0.1.0",
+    "org.openagentlabs.host": "rl-worker-07.cluster.internal"
+  }
+}

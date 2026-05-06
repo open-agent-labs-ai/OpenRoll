@@ -1,0 +1,43 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+*.egg
+.eggs/
+dist/
+build/
+.tox/
+.venv/
+venv/
+env/
+.env
+.python-version
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# Test / coverage
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# Build artifacts
+*.so
+*.dylib
+*.dll
+
+# Local data
+*.parquet
+*.openroll.jsonl.gz
+!examples/*.openroll.jsonl
+!examples/*.openroll.jsonl.gz
+scratch/
+local/
+tmp/
