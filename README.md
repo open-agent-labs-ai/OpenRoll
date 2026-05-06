@@ -2,9 +2,11 @@
 
 **An open standard for recording RL rollouts.**
 
-OpenRoll is a portable, human-readable file format for the **trajectories** ("rollouts") produced when an RL framework collects experience from an agent — especially when that agent is a language model. One JSONL line is one rollout. The format losslessly carries everything a PyTorch trainer needs for SFT, DPO, PPO, GRPO, and RLOO: prompts, completions, tool calls, rewards, logprobs, reference logprobs, values, advantages, returns, action masks, and GRPO group ids — without giving up the ability to `cat` the file and read it.
+OpenRoll is a portable, human-readable **interchange format** for the **trajectories** ("rollouts") produced when an RL framework collects experience from an agent — especially when that agent is a language model. One JSONL line is one rollout. The format is intentionally framework-agnostic: it assumes no specific ML backend (PyTorch, JAX, TensorFlow, native CUDA), no specific trainer (PPO / GRPO / RLOO / DPO / GAE / ...), and no specific rollout engine (vLLM, SGLang, TGI, Gymnasium, custom). It losslessly carries every signal a trainer typically needs — prompts, completions, tool calls, rewards, logprobs, reference logprobs, values, advantages, returns, action masks, and GRPO group ids — while still being something you can `cat` and read.
 
-> **In one line:** OpenRoll is to RL rollouts what RLDS / Minari are to gym episodes — except it speaks `messages` and `tool_call_id` natively, and unlike TRL's prompt-only inputs or OpenTelemetry GenAI's observability spans, it carries the per-token training signals that turn a recorded trajectory into a training batch. See [Related work](#related-work) for a full comparison.
+> **In one line:** OpenRoll is to RL rollouts what RLDS / Minari are to gym episodes — except it speaks `messages` and `tool_call_id` natively, and unlike TRL's prompt-only inputs or OpenTelemetry GenAI's observability spans, it carries the per-token training signals that turn a recorded trajectory into a training batch. See [Related work](#related-work) and [Framework adapters](#framework-adapters) for the full picture.
+
+> **Framework support:** OpenRoll is a JSONL-on-disk format. It can be **produced** by any rollout engine and **consumed** by any trainer in the modern RL ecosystem — TRL, verl, OpenRLHF, NeMo-RL, AReaL, slime, ms-swift, Open-Instruct, LLaMA-Factory, ROLL, rLLM, RLlib, Stable-Baselines3, Tianshou, TorchRL, CleanRL, Acme, PufferLib, Minari, RLDS — via thin adapters. The reference SDK in this repo is Python; ports in any language are first-class.
 
 | What                         | Where                                                                                  |
 | ---------------------------- | -------------------------------------------------------------------------------------- |
@@ -61,21 +63,23 @@ That's a complete, valid OpenRoll record. Add token-level arrays (`token_ids`, `
 ## Install
 
 ```bash
-# from a checkout
+# core SDK (validate / read / write)
 pip install -e python/
 
-# with PyTorch + Parquet support
-pip install -e 'python/[torch,parquet,validate]'
+# with optional integrations
+pip install -e 'python/[validate,parquet,torch]'
 ```
 
-The package depends only on `pydantic>=2.6` at runtime. Optional extras:
+The core package depends only on `pydantic>=2.6` at runtime — no PyTorch, no JAX, no TensorFlow. Every framework integration is an **opt-in extra**:
 
-| Extra      | Adds                                | What it enables                                 |
-| ---------- | ----------------------------------- | ----------------------------------------------- |
-| `validate` | `jsonschema>=4.18`                  | `openroll.validate(...)` and `openroll validate` |
-| `torch`    | `torch>=2.0`                        | `openroll.torch.RolloutStepDataset`              |
-| `parquet`  | `pyarrow>=14`                       | `openroll convert ... .parquet`                  |
-| `hf`       | `datasets>=2`                       | `openroll.adapters.to_hf_dataset(...)`           |
+| Extra      | Adds                  | What it enables                                                  |
+| ---------- | --------------------- | ---------------------------------------------------------------- |
+| `validate` | `jsonschema>=4.18`    | `openroll.validate(...)` and `openroll validate`                  |
+| `parquet`  | `pyarrow>=14`         | `openroll convert ... .parquet`; bulk Parquet read/write          |
+| `hf`       | `datasets>=2`         | `openroll.adapters.to_hf_dataset(...)` — feeds TRL, ms-swift, LLaMA-Factory, Open-Instruct, etc. |
+| `torch`    | `torch>=2.0`          | `openroll.torch.RolloutStepDataset` for PyTorch `DataLoader`     |
+
+A JAX trainer (CleanRL-JAX, Acme, Brax) reads OpenRoll JSONL with the same SDK and converts to JAX arrays at batch time — no torch dependency. A Rust or Go consumer parses the JSONL with any JSON library — no Python at all. See [`docs/framework-adapters.md`](docs/framework-adapters.md) for ready-made conversion sketches.
 
 > **Python 3.8 users:** also `pip install eval_type_backport`. Pydantic uses modern `X | None` annotations.
 
@@ -177,7 +181,11 @@ rollouts = from_trl_grpo_outputs(
 # rollouts is a list[Rollout], all sharing the same group_id.
 ```
 
-### PyTorch training
+### Training framework integration
+
+OpenRoll JSONL is a portable interchange format. The reference SDK ships a thin PyTorch helper, but any framework — PyTorch, JAX, TensorFlow, or even native code — reads OpenRoll with its own JSON parser. Sketches:
+
+**PyTorch (TRL, verl, OpenRLHF, NeMo-RL, AReaL, slime, ms-swift, RLlib, SB3, Tianshou, TorchRL, CleanRL):**
 
 ```python
 from torch.utils.data import DataLoader
@@ -196,6 +204,44 @@ for batch in loader:
 ```
 
 `RolloutStepDataset` is an `IterableDataset`, so it streams from disk and shards across DataLoader workers automatically.
+
+**JAX (CleanRL-JAX, Acme, Brax):**
+
+```python
+import jax.numpy as jnp
+import openroll as orl
+
+def to_jax_batch(rollouts):
+    obs    = jnp.stack([jnp.asarray(s.observation) for r in rollouts for s in r.steps])
+    acts   = jnp.stack([jnp.asarray(s.action.value)  for r in rollouts for s in r.steps])
+    rews   = jnp.array([s.reward or 0.0             for r in rollouts for s in r.steps])
+    return obs, acts, rews
+
+batch = to_jax_batch(list(orl.read("rollouts.openroll.jsonl")))
+```
+
+**HuggingFace TRL / verl / Open-Instruct (HF Datasets path):**
+
+```python
+from openroll.adapters import to_hf_dataset
+ds = to_hf_dataset(orl.read("rollouts/"), view="step")
+# ds has columns: prompt, response, reward, advantage, logprob, ref_logprob,
+# token_ids, token_logprobs, token_rewards, terminated, truncated, ...
+# pass directly to TRL's GRPOTrainer / DPOTrainer / SFTTrainer
+```
+
+**verl (Parquet path):**
+
+```bash
+openroll convert rollouts.openroll.jsonl rollouts.parquet
+# rollouts.parquet is verl's native input format
+```
+
+**Any other language (Rust / Go / TypeScript / Julia):**
+
+Each line of an OpenRoll file is a self-contained JSON object that conforms to [`schema/openroll-v0.1.0.schema.json`](schema/openroll-v0.1.0.schema.json). Generate bindings with `quicktype`, `prost-build`, or your language's JSON Schema tool of choice. There is no Python on the wire.
+
+See [`docs/framework-adapters.md`](docs/framework-adapters.md) for adapter sketches against TRL, verl, OpenRLHF, NeMo-RL, AReaL, slime, TorchRL, RLlib, Stable-Baselines3, Tianshou, and Minari / RLDS.
 
 ---
 
@@ -314,6 +360,50 @@ The closest neighbors are **RLDS / Minari** (same structural ambition, different
 
 ---
 
+## Framework adapters
+
+OpenRoll is an interchange format — it lives **between** rollout producers (sampling engines, environments, agent harnesses) and rollout consumers (RL trainers). Every framework below can read or write OpenRoll JSONL via a thin adapter.
+
+### LLM RL post-training (May 2026)
+
+| Framework | Repo | Backend | Adapter route |
+| --- | --- | --- | --- |
+| HuggingFace TRL | [huggingface/trl](https://github.com/huggingface/trl) | PyTorch | `to_hf_dataset(view="step")` → `GRPOTrainer` / `DPOTrainer` / `PPOTrainer` |
+| verl | [volcengine/verl](https://github.com/volcengine/verl) | PyTorch + Ray | `openroll convert ... .parquet` (verl's native input) |
+| OpenRLHF | [OpenRLHF/OpenRLHF](https://github.com/OpenRLHF/OpenRLHF) | PyTorch + Ray | step token-level fields → OpenRLHF `experience` |
+| NVIDIA NeMo-RL | [NVIDIA-NeMo/RL](https://github.com/NVIDIA-NeMo/RL) | PyTorch + Megatron | `messages` + tool calls → `BatchedDataDict[DatumSpec]` |
+| AReaL | [inclusionAI/AReaL](https://github.com/inclusionAI/AReaL) | PyTorch | `token_ids` / `token_logprobs` / `action_mask` → HF-padded trajectory dict |
+| slime | [THUDM/slime](https://github.com/THUDM/slime) | PyTorch + Megatron + SGLang | OpenRoll → Data Buffer custom-data interface |
+| ms-swift | [modelscope/ms-swift](https://github.com/modelscope/ms-swift) | PyTorch | `messages` → HF datasets + GRPO trainer |
+| Open-Instruct | [allenai/open-instruct](https://github.com/allenai/open-instruct) | PyTorch | preference / RLVR dataset adapter |
+| LLaMA-Factory | [hiyouga/LLaMA-Factory](https://github.com/hiyouga/LLaMA-Factory) | PyTorch | `messages` → alpaca / sharegpt JSON |
+| ROLL | [alibaba/ROLL](https://github.com/alibaba/ROLL) | PyTorch + Ray | strategy-abstracted rollouts |
+| rLLM | [rllm-org/rllm](https://github.com/rllm-org/rllm) | PyTorch (verl/tinker backends) | OpenRoll Step ↔ `@rllm.rollout` traces |
+
+### Classical / general-purpose RL
+
+| Framework | Repo | Backend | Adapter route |
+| --- | --- | --- | --- |
+| Ray RLlib | [ray-project/ray](https://github.com/ray-project/ray) | PyTorch (TF legacy) | OpenRoll → `SingleAgentEpisode` (offline mode) |
+| Stable-Baselines3 | [DLR-RM/stable-baselines3](https://github.com/DLR-RM/stable-baselines3) | PyTorch | OpenRoll → `ReplayBuffer` |
+| Tianshou | [thu-ml/tianshou](https://github.com/thu-ml/tianshou) | PyTorch | OpenRoll → Minari → `ReplayBuffer.from_hdf5` |
+| TorchRL | [pytorch/rl](https://github.com/pytorch/rl) | PyTorch (TensorDict) | OpenRoll → `TensorDict` with `traj_ids` for `SliceSampler` |
+| CleanRL | [vwxyzjn/cleanrl](https://github.com/vwxyzjn/cleanrl) | PyTorch / JAX | OpenRoll → in-memory rollout buffer |
+| Acme | [google-deepmind/acme](https://github.com/google-deepmind/acme) | JAX | OpenRoll → Reverb tables of `TimeStep` |
+| Brax | [google/brax](https://github.com/google/brax) | JAX | OpenRoll trajectories → JAX-array episodes |
+| PufferLib | [PufferAI/PufferLib](https://github.com/PufferAI/PufferLib) | PyTorch + native CUDA | OpenRoll → vectorized rollout segments |
+
+### Offline-RL dataset peers
+
+| Format | Repo | Adapter route |
+| --- | --- | --- |
+| Farama Minari | [Farama-Foundation/Minari](https://github.com/Farama-Foundation/Minari) | Bidirectional converter (HDF5 archive ↔ JSONL stream) |
+| DeepMind RLDS | [google-research/rlds](https://github.com/google-research/rlds) | One-way converter to `tf.data.Dataset` of episodes |
+
+This list is non-normative — it's a snapshot of the May 2026 ecosystem, not a closed registry. Any framework that consumes a subset of OpenRoll's fields is a first-class consumer; you don't need to be listed here to ship one. See [`docs/framework-adapters.md`](docs/framework-adapters.md) for code-level adapter sketches.
+
+---
+
 ## Project layout
 
 ```
@@ -339,13 +429,14 @@ The closest neighbors are **RLDS / Minari** (same structural ambition, different
 │   │   ├── writer.py                           # streaming JSONL writer (gzip-aware)
 │   │   ├── validator.py                        # schema + semantic validation
 │   │   ├── adapters.py                         # Gym / TRL / HF Datasets adapters
-│   │   ├── torch.py                            # PyTorch IterableDatasets + collator
+│   │   ├── torch.py                            # OPTIONAL PyTorch IterableDataset + collator
 │   │   └── cli.py                              # `openroll` CLI
 │   └── tests/
 │       ├── test_round_trip.py
 │       └── test_adapters.py
 └── docs/
-    └── parquet-projection.md                   # rules for the Parquet logical schema
+    ├── parquet-projection.md                   # rules for the Parquet logical schema
+    └── framework-adapters.md                   # adapter sketches for TRL, verl, OpenRLHF, RLlib, Minari, ...
 ```
 
 ---

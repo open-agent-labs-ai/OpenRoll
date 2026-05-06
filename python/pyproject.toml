@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "openroll"
 version = "0.1.0"
-description = "OpenRoll — open standard for recording RL rollouts (trajectories) for training LLMs."
+description = "OpenRoll — framework-agnostic open standard for recording RL rollouts (trajectories) — interop with TRL, verl, OpenRLHF, NeMo-RL, AReaL, slime, RLlib, TorchRL, SB3, Tianshou, CleanRL, Acme, Minari, and more."
 readme = "../README.md"
 requires-python = ">=3.9"
 license = { text = "Apache-2.0" }
@@ -24,6 +24,19 @@ keywords = [
     "dpo",
     "agent",
     "openroll",
+    "trl",
+    "verl",
+    "openrlhf",
+    "nemo-rl",
+    "areal",
+    "rllib",
+    "torchrl",
+    "stable-baselines3",
+    "tianshou",
+    "cleanrl",
+    "minari",
+    "rlds",
+    "interchange-format",
 ]
 classifiers = [
     "Development Status :: 3 - Alpha",

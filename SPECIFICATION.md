@@ -23,16 +23,19 @@ The keywords **MUST**, **SHOULD**, **MAY**, **REQUIRED**, **OPTIONAL** in this d
 ### 1.1 Goals
 
 - Serve as a **single, durable on-disk format** for trajectories collected during RL training of language models, classical RL agents, and tool-using agents.
-- Be **directly consumable by PyTorch** for SFT, DPO, PPO, and GRPO without lossy preprocessing.
+- Be **framework-agnostic**: an OpenRoll file is plain JSONL on disk and assumes no specific ML backend (PyTorch, JAX, TensorFlow, native CUDA), no specific trainer (PPO/GRPO/RLOO/DPO/PPO-EI/GAE/...), and no specific rollout engine (vLLM, SGLang, TGI, Gymnasium, custom). Adapters convert between OpenRoll and any framework's in-memory representation; the on-disk format never bakes in one.
+- Carry **every signal a trainer typically needs** so that conversion is lossless: prompts/messages, completions, per-token logprobs, ref-logprobs, values, advantages, returns, KL terms, action/attention masks, GRPO/RLOO group ids, tool calls, terminated/truncated split, and free-form info.
 - Be **append-only and shardable** so that distributed rollout collectors can write concurrently to a dataset.
 - Round-trip losslessly between JSON and Parquet.
 - Be small enough to inspect with `head` / `jq` / `cat` on a developer laptop.
 
 ### 1.2 Non-Goals
 
+- OpenRoll is **not** tied to PyTorch. The reference SDK in this repository is Python + Pydantic, and provides an optional PyTorch helper, but the format itself is language- and backend-neutral. JAX, TensorFlow, Rust, Go, and JavaScript readers are equally first-class.
 - OpenRoll is **not** a streaming wire protocol for live agent telemetry (use OTLP / OpenTelemetry / [opentraces.ai](https://opentraces.ai) for that).
 - OpenRoll is **not** a code-attribution format (use [`cursor/agent-trace`](https://github.com/cursor/agent-trace) and embed it under `metadata` if needed).
 - OpenRoll does **not** prescribe a reward function or training algorithm.
+- OpenRoll does **not** mandate any specific in-memory representation. `TensorDict`, `BatchedDataDict`, `DataProto`, `SampleBatch`, `Batch`, `experience`, `ReplayBuffer`, `Trajectory`, `Episode` — these are framework-internal shapes; OpenRoll only standardizes the on-disk file.
 
 ---
 
@@ -420,7 +423,73 @@ OpenRoll borrows or interoperates with:
 
 ---
 
-## 15. Conformance
+## 15. Framework Interoperability
+
+OpenRoll is an **interchange format**: it sits between rollout *producers* (engines that generate trajectories) and rollout *consumers* (trainers that compute losses). It is intentionally framework-agnostic. A single OpenRoll record can be written by any producer and read by any consumer via thin adapters.
+
+### 15.1 Producers
+
+Any system that emits trajectories can write OpenRoll records, including:
+
+- **LLM serving / sampling engines** — vLLM, SGLang, TGI, llama.cpp, Anthropic / OpenAI / xAI / Google APIs (record the prompt / completion / logprobs as a `Step`).
+- **Classical RL environments** — [Gymnasium](https://gymnasium.farama.org), [PettingZoo](https://pettingzoo.farama.org), [Brax](https://github.com/google/brax), MuJoCo, Atari, robotics simulators (record the `(observation, action, reward, terminated, truncated, info)` tuple as a `Step`).
+- **Agent harnesses** — Claude Code, Codex, browser/web agents, code-execution agents (record each turn — assistant message, tool calls, tool results — as paired steps).
+- **Annotators / preference collectors** — convert `(prompt, chosen, rejected)` pairs into two grouped rollouts sharing a `group_id`.
+
+### 15.2 Consumers
+
+The per-step and per-token fields in §5 and §6 are a superset of what every major LLM-RL and classical-RL trainer consumes. Concrete frameworks (May 2026) for which OpenRoll → framework-native conversion is straightforward:
+
+**LLM RL post-training**
+
+| Framework | Backend | OpenRoll → framework path |
+|---|---|---|
+| [HuggingFace TRL](https://github.com/huggingface/trl) | PyTorch | `messages` + `policy.sampling` + step `token_logprobs` → TRL `rollout_func` dict |
+| [verl](https://github.com/volcengine/verl) | PyTorch + Ray | OpenRoll JSONL → Parquet (verl's native input format) |
+| [OpenRLHF](https://github.com/OpenRLHF/OpenRLHF) | PyTorch + Ray | step token-level fields → OpenRLHF `experience` |
+| [NVIDIA NeMo-RL](https://github.com/NVIDIA-NeMo/RL) | PyTorch + Megatron | `messages` + tool calls → `BatchedDataDict[DatumSpec]` (OpenAI Responses API shape) |
+| [AReaL](https://github.com/inclusionAI/AReaL) | PyTorch | step `token_ids` / `token_logprobs` / `action_mask` → HF-padded trajectory dict |
+| [slime](https://github.com/THUDM/slime) | PyTorch + Megatron + SGLang | OpenRoll → Data Buffer custom-data interface |
+| [ms-swift](https://github.com/modelscope/ms-swift) | PyTorch | `messages` → HF datasets + GRPO trainer |
+| [Open-Instruct](https://github.com/allenai/open-instruct) | PyTorch | `messages` + outcome → preference / verifiable-reward dataset |
+| [LLaMA-Factory](https://github.com/hiyouga/LLaMA-Factory) | PyTorch | `messages` → alpaca / sharegpt JSON |
+| [ROLL](https://github.com/alibaba/ROLL) | PyTorch + Ray | OpenRoll → strategy-abstracted rollouts |
+| [rLLM](https://github.com/rllm-org/rllm) | PyTorch (verl/tinker backends) | OpenRoll Step ↔ `@rllm.rollout` traces |
+
+**Classical / general-purpose RL**
+
+| Framework | Backend | OpenRoll → framework path |
+|---|---|---|
+| [Ray RLlib](https://github.com/ray-project/ray) | PyTorch (TF legacy) | OpenRoll → `SingleAgentEpisode` (offline mode) |
+| [Stable-Baselines3](https://github.com/DLR-RM/stable-baselines3) | PyTorch | OpenRoll → `ReplayBuffer` |
+| [Tianshou](https://github.com/thu-ml/tianshou) | PyTorch | OpenRoll JSONL → Minari → Tianshou `ReplayBuffer.from_hdf5` |
+| [TorchRL](https://github.com/pytorch/rl) | PyTorch (TensorDict) | OpenRoll → `TensorDict` with `traj_ids` for `SliceSampler` |
+| [CleanRL](https://github.com/vwxyzjn/cleanrl) | PyTorch / JAX | OpenRoll → in-memory rollout buffer |
+| [Acme](https://github.com/google-deepmind/acme) | JAX | OpenRoll → Reverb tables of `TimeStep` |
+| [PufferLib](https://github.com/PufferAI/PufferLib) | PyTorch + native CUDA | OpenRoll → vectorized rollout segments |
+
+**Offline-RL dataset peers** (direct converters)
+
+| Format | OpenRoll relationship |
+|---|---|
+| [Farama Minari](https://github.com/Farama-Foundation/Minari) | Bidirectional converter; Minari is HDF5-archive-oriented, OpenRoll is JSONL-streaming-oriented. |
+| [DeepMind RLDS](https://github.com/google-research/rlds) | One-way converter (OpenRoll → tf.data.Dataset of episodes). |
+
+This list is **non-normative** — it is a snapshot of the ecosystem at the time of writing, not a closed registry. New frameworks that consume any subset of OpenRoll's fields are first-class consumers without needing to be enumerated here.
+
+### 15.3 Adapter pattern
+
+A conformant adapter need only:
+
+1. **Read** OpenRoll JSONL records using any JSON parser (or the reference SDK).
+2. **Project** the fields the target framework needs into the framework's in-memory representation. Fields the framework doesn't use are silently ignored — OpenRoll guarantees forward-compat: unknown fields MUST be ignored, not rejected (§10).
+3. **Optionally write back** in OpenRoll JSONL after training-side enrichment (e.g. recomputed advantages, judge re-scoring) — bumping `lifecycle: "provisional"` if the record is subject to further change.
+
+There is no requirement that an adapter be hosted in this repository; any project may publish an OpenRoll adapter under any license.
+
+---
+
+## 16. Conformance
 
 An implementation is **conformant with OpenRoll v0.1.0** iff:
 
@@ -430,6 +499,6 @@ An implementation is **conformant with OpenRoll v0.1.0** iff:
 
 ---
 
-## 16. License
+## 17. License
 
 This specification is published under the **CC BY 4.0** license. The reference implementation in `python/` is published under the **Apache License 2.0**.
