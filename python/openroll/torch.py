@@ -1,13 +1,23 @@
-"""PyTorch interop for OpenRoll.
+"""Optional PyTorch helpers for OpenRoll.
 
-Two patterns supported:
+OpenRoll itself is a framework-agnostic JSONL format — this module is one of
+several optional integrations. JAX users should iterate `openroll.read()` and
+build `jax.numpy` arrays at batch time; HuggingFace TRL / ms-swift /
+Open-Instruct users should prefer `openroll.adapters.to_hf_dataset(...)` (which
+emits an `arrow`-backed `datasets.Dataset` consumable by any HF trainer); verl
+users should `openroll convert ... .parquet` (verl's native input format). See
+`docs/framework-adapters.md` for sketches against TRL, OpenRLHF, NeMo-RL,
+AReaL, slime, RLlib, TorchRL, Stable-Baselines3, Tianshou, CleanRL-JAX, Acme,
+and Minari.
+
+Two patterns supported here:
 
   1) `RolloutDataset` — IterableDataset over JSONL files. Each yielded item is
      a single Rollout (or dict). Suitable for SFT / DPO with a custom collator.
 
   2) `RolloutStepDataset` — IterableDataset that flattens rollouts to
      per-step training samples. Each yielded item is a dict containing the
-     fields a PPO/GRPO trainer typically needs:
+     fields a PPO/GRPO/RLOO trainer typically needs:
 
         prompt_token_ids, response_token_ids, attention_mask, action_mask,
         logprobs, ref_logprobs, advantages, returns, rewards, values,
@@ -16,7 +26,9 @@ Two patterns supported:
      Together with `pad_and_collate(batch)`, this gives you a drop-in
      dataloader for token-level RL training.
 
-Importing this module requires `torch` (an optional dependency).
+Importing this module requires `torch` (an optional dependency, installed
+via `pip install openroll[torch]`). The rest of the OpenRoll SDK does NOT
+depend on PyTorch.
 """
 from __future__ import annotations
 
