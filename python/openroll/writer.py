@@ -6,7 +6,6 @@ manager so the underlying file handle is closed even on errors.
 from __future__ import annotations
 
 import gzip
-import io
 import os
 from pathlib import Path
 from typing import IO, Iterable

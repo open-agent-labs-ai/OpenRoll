@@ -18,7 +18,6 @@ from pathlib import Path
 from typing import Any, Iterable
 
 try:
-    import jsonschema
     from jsonschema import Draft202012Validator
 except ImportError as e:  # pragma: no cover
     raise ImportError(
