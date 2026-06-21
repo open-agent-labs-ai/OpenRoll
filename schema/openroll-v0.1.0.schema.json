@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://openroll.org/schema/v0.1.0/rollout.schema.json",
+  "$id": "https://openagentlabs.ai/openroll/schema/v0.1.0/rollout.schema.json",
   "title": "OpenRoll Rollout",
   "description": "OpenRoll v0.1.0 — open standard for recording RL rollouts (trajectories) produced by RL frameworks for training language models. One rollout = one episode = one JSONL line.",
   "type": "object",
