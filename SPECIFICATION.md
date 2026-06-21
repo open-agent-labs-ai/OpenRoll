@@ -22,17 +22,21 @@ The keywords **MUST**, **SHOULD**, **MAY**, **REQUIRED**, **OPTIONAL** in this d
 
 ### 1.1 Goals
 
-- Serve as a **single, durable on-disk format** for trajectories collected during RL training of language models, classical RL agents, and tool-using agents.
-- Be **directly consumable by PyTorch** for SFT, DPO, PPO, and GRPO without lossy preprocessing.
+- Serve as **the definitive open standard** on-disk format for trajectories collected during RL training of language models, coding models, classical RL agents, and tool-using agents.
+- Be **framework-agnostic**: an OpenRoll file is plain JSONL on disk and assumes no specific ML backend, no specific trainer (PPO / GRPO / RLOO / DPO / GAE / ...), and no specific rollout engine. Adapters convert between OpenRoll and any framework's in-memory representation; the on-disk format never bakes in one.
+- Carry **every signal a trainer typically needs** so that conversion is lossless: prompts/messages, completions, per-token logprobs, ref-logprobs, values, advantages, returns, KL terms, action/attention masks, GRPO/RLOO group ids, tool calls, terminated/truncated split, and free-form info.
+- Express **the full surface of modern LLMs**: multi-turn conversations, question-and-answer tasks, agentic workflows, tool usage, chain-of-thought / reasoning blocks, multi-modal content (text + image + audio + resources), structured output, parallel tool calls, and per-token entropies.
+- Express **coding-model trajectories**: file read / write / patch tool calls, unified diffs in the outcome, code snippets quoted alongside the action.
 - Be **append-only and shardable** so that distributed rollout collectors can write concurrently to a dataset.
 - Round-trip losslessly between JSON and Parquet.
 - Be small enough to inspect with `head` / `jq` / `cat` on a developer laptop.
 
 ### 1.2 Non-Goals
 
-- OpenRoll is **not** a streaming wire protocol for live agent telemetry (use OTLP / OpenTelemetry / [opentraces.ai](https://opentraces.ai) for that).
-- OpenRoll is **not** a code-attribution format (use [`cursor/agent-trace`](https://github.com/cursor/agent-trace) and embed it under `metadata` if needed).
+- OpenRoll is **not** tied to any single ML backend. The reference SDK in this repository is Python + Pydantic, but the format itself is language- and backend-neutral. Readers and writers in any language are first-class.
+- OpenRoll is **not** a streaming wire protocol for live agent telemetry.
 - OpenRoll does **not** prescribe a reward function or training algorithm.
+- OpenRoll does **not** mandate any specific in-memory representation. `TensorDict`, `BatchedDataDict`, `DataProto`, `SampleBatch`, `Batch`, `experience`, `ReplayBuffer`, `Trajectory`, `Episode` — these are framework-internal shapes; OpenRoll only standardizes the on-disk file.
 
 ---
 
@@ -300,6 +304,55 @@ A trajectory **MAY** carry **only** turn-level signals (`logprob`, `value`, `adv
 
 ---
 
+## 6.A Coverage of Modern LLM and Coding-Model Features
+
+OpenRoll is designed to express every shape an LLM-based rollout takes in practice. This subsection enumerates the modern surface and the fields that carry it, normatively.
+
+### 6.A.1 Multi-turn conversations
+- `messages[]` carries the ordered conversation with `role ∈ {system, user, assistant, tool, developer}`.
+- `steps[]` carries the same conversation as RL steps (one assistant turn = one `role="agent"` step).
+- The two views MUST agree where both are present; if they disagree, `steps` is authoritative.
+
+### 6.A.2 Question-and-answer tasks
+- `task.description`, `task.instruction`, and `task.expected_answer` carry the prompt and ground truth.
+- A single-step rollout with `terminated=true` is the canonical Q&A shape.
+- `task.rubric` carries a judge rubric for non-exact-match grading.
+
+### 6.A.3 Agentic workflows
+- `step.tool_calls[]` and `step.tool_results[]` carry tool invocations and their results, paired by `tool_call_id`.
+- `step.role` distinguishes agent, tool, env, and user origins.
+- `parent_rollout_id` expresses hierarchical sub-agents.
+- `agent.role` distinguishes main / planner / critic / subagent within a multi-agent system.
+
+### 6.A.4 Tool usage
+- `tools[]` declares the tools available to the agent, each with an OpenAI-shaped `input_schema` and optional `output_schema`.
+- `step.tools_available[]` records which subset was actually exposed at each step.
+- `tool_call.type ∈ {function, mcp, code, builtin}` covers function-calling, MCP servers, code-execution sandboxes, and provider built-ins.
+- **Parallel tool calls** are a plain array: `step.tool_calls[]` MAY contain multiple invocations issued in one assistant turn.
+
+### 6.A.5 Reasoning blocks / chain-of-thought
+- `action.reasoning` and `message.reasoning` carry separated CoT distinct from final response text.
+- `tokens_used.reasoning_tokens` records reasoning token spend (provider APIs expose this).
+
+### 6.A.6 Multi-modal content
+- `ContentPart.type ∈ {text, image, audio, resource, json}` carries text, images (URL or data URI), audio, resource references, and structured JSON.
+- Messages, tool results, and observations all accept multi-part content.
+
+### 6.A.7 Structured output
+- `ContentPart.type="json"` with `json_value` carries provider structured-output responses.
+- `tools[].output_schema` carries the structured-result schema for downstream validation.
+
+### 6.A.8 Per-token training signals (advanced LLM features)
+- `token_logprobs`, `token_ref_logprobs`, `token_rewards`, `token_values`, `token_advantages`, `token_entropy`, `token_topk` carry the modern decoding-time and training-time signals frontier models expose.
+
+### 6.A.9 Coding models
+- `task.repository` and `task.base_commit` capture the repo and starting revision.
+- File-edit tool calls (read / write / patch / search) flow through the standard `tool_calls` / `tool_results` machinery.
+- `step.snippets[]` (Snippet objects: `{path, start_line, end_line, content, language}`) carry code excerpts the agent quoted from search/read calls, so downstream readers can recover what the agent looked at without re-running the tools.
+- `outcome.patch` (unified diff) is the canonical "net change to the repository" the coding agent made. For RL on coding tasks, this is the action that gets verified.
+
+---
+
 ## 7. Outcome and Metrics
 
 ### 7.1 Outcome
@@ -408,15 +461,64 @@ OpenRoll records **MAY** contain user prompts, model outputs, tool inputs/output
 
 ---
 
-## 14. Relationship to Prior Art
+## 14. Framework Interoperability
 
-OpenRoll borrows or interoperates with:
+OpenRoll is an **interchange format**: it sits between rollout *producers* (engines that generate trajectories) and rollout *consumers* (trainers that compute losses). It is intentionally framework-agnostic. A single OpenRoll record can be written by any producer and read by any consumer via thin adapters.
 
-- **[opentraces.ai](https://opentraces.ai) / [JayFarei/opentraces](https://github.com/JayFarei/opentraces)** — closest neighbor. OpenRoll adopts content-addressed system prompts, the `tool_call_id` ↔ `tool_result.tool_call_id` pairing, the terminal-state taxonomy, and the `provisional / final` lifecycle. OpenRoll **adds** per-step / per-token training signals (logprobs, values, advantages, returns, action masks, group ids) and the explicit `terminated / truncated` split, which opentraces.ai does not model.
-- **[cursor/agent-trace](https://github.com/cursor/agent-trace)** — code attribution. OpenRoll does not duplicate this; if you need code attribution, embed an Agent-Trace record under `metadata` with a reverse-DNS key.
-- **[Gymnasium](https://gymnasium.farama.org)** — the `(observation, action, reward, terminated, truncated, info)` step shape is preserved per step.
-- **OpenAI / [MCP](https://modelcontextprotocol.io)** — tool-call / tool-result encoding matches.
-- **[HuggingFace TRL](https://huggingface.co/docs/trl), [verl](https://verl.readthedocs.io), [OpenRLHF](https://github.com/OpenRLHF/OpenRLHF)** — the per-step token-level fields are a strict superset of what these trainers consume.
+### 14.1 Producers
+
+Any system that emits trajectories can write OpenRoll records, including:
+
+- **LLM serving / sampling engines** — vLLM, SGLang, TGI, llama.cpp, and any provider chat-completion API (record the prompt / completion / logprobs as a `Step`).
+- **Classical RL environments** — Gymnasium, PettingZoo, Brax, MuJoCo, Atari, robotics simulators (record the `(observation, action, reward, terminated, truncated, info)` tuple as a `Step`).
+- **Agent harnesses** — Claude Code, Codex, browser / web agents, code-execution agents (record each turn — assistant message, tool calls, tool results — as paired steps).
+- **Coding agents** — agents that read, write, or patch source files (record file-edit tool calls and the resulting unified diff in `outcome.patch`).
+- **Annotators / preference collectors** — convert `(prompt, chosen, rejected)` pairs into grouped rollouts sharing a `group_id`.
+
+### 14.2 Consumers
+
+The per-step and per-token fields in §5 and §6 are a superset of what every major LLM-RL and classical-RL trainer consumes. Frameworks for which OpenRoll → framework-native conversion is straightforward include:
+
+**LLM RL post-training**
+
+| Framework | OpenRoll → framework path |
+|---|---|
+| [HuggingFace TRL](https://github.com/huggingface/trl) | `messages` + `policy.sampling` + step `token_logprobs` → TRL `rollout_func` dict |
+| [OpenRLHF](https://github.com/OpenRLHF/OpenRLHF) | step token-level fields → OpenRLHF `experience` |
+| [verl](https://github.com/volcengine/verl) | OpenRoll JSONL → Parquet (verl's native input format) |
+| [NVIDIA NeMo-RL](https://github.com/NVIDIA-NeMo/RL) | `messages` + tool calls → `BatchedDataDict[DatumSpec]` (OpenAI Responses API shape) |
+| [AReaL](https://github.com/inclusionAI/AReaL) | step `token_ids` / `token_logprobs` / `action_mask` → HF-padded trajectory dict |
+| [slime](https://github.com/THUDM/slime) | OpenRoll → Data Buffer custom-data interface |
+| [ms-swift](https://github.com/modelscope/ms-swift) | `messages` → HF datasets + GRPO trainer |
+| [Open-Instruct](https://github.com/allenai/open-instruct) | `messages` + outcome → preference / verifiable-reward dataset |
+| [LLaMA-Factory](https://github.com/hiyouga/LLaMA-Factory) | `messages` → alpaca / sharegpt JSON |
+| [ROLL](https://github.com/alibaba/ROLL) | OpenRoll → strategy-abstracted rollouts |
+| [rLLM](https://github.com/rllm-org/rllm) | OpenRoll Step ↔ `@rllm.rollout` traces |
+
+**Classical / general-purpose RL**
+
+| Framework | OpenRoll → framework path |
+|---|---|
+| [Ray RLlib](https://github.com/ray-project/ray) | OpenRoll → `SingleAgentEpisode` (offline mode) |
+| [Stable-Baselines3](https://github.com/DLR-RM/stable-baselines3) | OpenRoll → `ReplayBuffer` |
+| [Tianshou](https://github.com/thu-ml/tianshou) | OpenRoll JSONL → Minari → Tianshou `ReplayBuffer.from_hdf5` |
+| [TorchRL](https://github.com/pytorch/rl) | OpenRoll → `TensorDict` with `traj_ids` for `SliceSampler` |
+| [CleanRL](https://github.com/vwxyzjn/cleanrl) | OpenRoll → in-memory rollout buffer |
+| [Acme](https://github.com/google-deepmind/acme) | OpenRoll → Reverb tables of `TimeStep` |
+| [PufferLib](https://github.com/PufferAI/PufferLib) | OpenRoll → vectorized rollout segments |
+| [Farama Minari](https://github.com/Farama-Foundation/Minari) | bidirectional converter |
+
+This list is **non-normative** — it is a snapshot of the ecosystem at the time of writing, not a closed registry. New frameworks that consume any subset of OpenRoll's fields are first-class consumers without needing to be enumerated here.
+
+### 14.3 Adapter pattern
+
+A conformant adapter need only:
+
+1. **Read** OpenRoll JSONL records using any JSON parser (or the reference SDK).
+2. **Project** the fields the target framework needs into the framework's in-memory representation. Fields the framework doesn't use are silently ignored — OpenRoll guarantees forward-compat: unknown fields MUST be ignored, not rejected (§10).
+3. **Optionally write back** in OpenRoll JSONL after training-side enrichment (e.g. recomputed advantages, judge re-scoring) — bumping `lifecycle: "provisional"` if the record is subject to further change.
+
+There is no requirement that an adapter be hosted in this repository; any project may publish an OpenRoll adapter under any license.
 
 ---
 

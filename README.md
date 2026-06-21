@@ -1,10 +1,20 @@
 # OpenRoll
 
-**An open standard for recording RL rollouts.**
+**The definitive open standard for recording RL rollouts and agent trajectories.**
 
-OpenRoll is a portable, human-readable file format for the **trajectories** ("rollouts") produced when an RL framework collects experience from an agent — especially when that agent is a language model. One JSONL line is one rollout. The format losslessly carries everything a PyTorch trainer needs for SFT, DPO, PPO, GRPO, and RLOO: prompts, completions, tool calls, rewards, logprobs, reference logprobs, values, advantages, returns, action masks, and GRPO group ids — without giving up the ability to `cat` the file and read it.
+OpenRoll is a portable, human-readable JSONL interchange format for the **trajectories** ("rollouts") produced when an RL framework collects experience from an agent. It is intentionally framework-agnostic, ML-backend-agnostic, and language-agnostic: any rollout engine can produce OpenRoll, and any RL trainer can consume it. One JSONL line is one rollout.
 
-> **In one line:** OpenRoll is to RL rollouts what RLDS / Minari are to gym episodes — except it speaks `messages` and `tool_call_id` natively, and unlike TRL's prompt-only inputs or OpenTelemetry GenAI's observability spans, it carries the per-token training signals that turn a recorded trajectory into a training batch. See [Related work](#related-work) for a full comparison.
+OpenRoll is built for the modern RL stack:
+
+- **Multi-turn conversations** — system / user / assistant / tool turns, in order.
+- **Question-and-answer tasks** — single-turn prompt → completion with a graded outcome.
+- **Agentic workflows** — tool calls paired to results by id, hierarchical sub-agents, free-form info per step.
+- **Advanced LLM features** — chain-of-thought / reasoning blocks, multi-modal content (text + image + audio + resources), structured (JSON) output, parallel tool calls, per-token logprobs and entropies.
+- **Coding models** — file read / write / patch tool calls, unified diffs in the outcome, code snippets quoted alongside the action.
+- **Classical RL** — Gymnasium-style `(observation, action, reward, terminated, truncated, info)` per step.
+- **Every signal a trainer needs** — prompts, completions, tool calls, rewards, logprobs, reference logprobs, values, advantages, returns, action masks, and group ids for GRPO / RLOO — all in one line you can still `cat` and read.
+
+OpenRoll is consumable by every framework in the modern RL ecosystem — HuggingFace TRL, OpenRLHF, verl, NVIDIA NeMo-RL, AReaL, slime, ms-swift, Open-Instruct, LLaMA-Factory, ROLL, rLLM, RLlib, Stable-Baselines3, Tianshou, TorchRL, CleanRL, Acme, Brax, PufferLib — via thin adapters. The reference SDK in this repo is Python; ports in any language are first-class.
 
 | What                         | Where                                                                                  |
 | ---------------------------- | -------------------------------------------------------------------------------------- |
@@ -14,23 +24,6 @@ OpenRoll is a portable, human-readable file format for the **trajectories** ("ro
 | Worked examples              | [`examples/`](examples)                                                                 |
 | Python SDK                   | [`python/openroll/`](python/openroll)                                                  |
 | CLI                          | `openroll validate / inspect / stats / convert / print-schema`                         |
-
----
-
-## Why another format?
-
-The agent-trace ecosystem ([opentraces.ai](https://opentraces.ai), [JayFarei/opentraces](https://github.com/JayFarei/opentraces), [cursor/agent-trace](https://github.com/cursor/agent-trace)) does an excellent job of recording **what an agent did**: messages, tool calls, observations, code edits. OpenRoll borrows liberally from those — content-addressed system prompts, `tool_call_id` pairing, terminal-state taxonomy, lifecycle.
-
-What those formats don't carry is the data an **RL trainer** needs:
-
-- per-action `logprob` and `ref_logprob`
-- per-token `token_logprobs`, `token_rewards`, `token_values`, `token_advantages`
-- `value`, `advantage`, `return_`, `kl_to_ref`
-- explicit `terminated` vs. `truncated` (Gymnasium-style — a single `done` flag is a known footgun)
-- `group_id` for GRPO / RLOO
-- `action_mask`, `attention_mask`, `prompt_token_ids`
-
-OpenRoll closes that gap, in a single shape that handles classical RL (Gymnasium), single-turn LLM RL (math, code), multi-turn tool-using agents, and GRPO groups.
 
 ---
 
@@ -61,21 +54,22 @@ That's a complete, valid OpenRoll record. Add token-level arrays (`token_ids`, `
 ## Install
 
 ```bash
-# from a checkout
+# core SDK (read / write / validate)
 pip install -e python/
 
-# with PyTorch + Parquet support
-pip install -e 'python/[torch,parquet,validate]'
+# with optional integrations
+pip install -e 'python/[validate,parquet,hf]'
 ```
 
-The package depends only on `pydantic>=2.6` at runtime. Optional extras:
+The core package depends only on `pydantic>=2.6` at runtime — no ML backend required. Every framework integration is an **opt-in extra**:
 
-| Extra      | Adds                                | What it enables                                 |
-| ---------- | ----------------------------------- | ----------------------------------------------- |
-| `validate` | `jsonschema>=4.18`                  | `openroll.validate(...)` and `openroll validate` |
-| `torch`    | `torch>=2.0`                        | `openroll.torch.RolloutStepDataset`              |
-| `parquet`  | `pyarrow>=14`                       | `openroll convert ... .parquet`                  |
-| `hf`       | `datasets>=2`                       | `openroll.adapters.to_hf_dataset(...)`           |
+| Extra      | Adds                  | What it enables                                                  |
+| ---------- | --------------------- | ---------------------------------------------------------------- |
+| `validate` | `jsonschema>=4.18`    | `openroll.validate(...)` and `openroll validate`                  |
+| `parquet`  | `pyarrow>=14`         | `openroll convert ... .parquet`; bulk Parquet read/write          |
+| `hf`       | `datasets>=2`         | `openroll.adapters.to_hf_dataset(...)` — feeds TRL, ms-swift, LLaMA-Factory, Open-Instruct, etc. |
+
+Non-Python consumers parse the JSONL with any JSON library — no Python on the wire. The authoritative schema is `schema/openroll-v0.1.0.schema.json`.
 
 > **Python 3.8 users:** also `pip install eval_type_backport`. Pydantic uses modern `X | None` annotations.
 
@@ -177,25 +171,69 @@ rollouts = from_trl_grpo_outputs(
 # rollouts is a list[Rollout], all sharing the same group_id.
 ```
 
-### PyTorch training
+### Training framework integration
+
+OpenRoll JSONL is a portable interchange format. Every modern RL framework can read it via a thin adapter:
+
+**HuggingFace TRL — GRPO / DPO / PPO / RLOO via HF Datasets:**
 
 ```python
-from torch.utils.data import DataLoader
-from openroll.torch import RolloutStepDataset, pad_and_collate
+import openroll as orl
+from openroll.adapters import to_hf_dataset
 
-ds = RolloutStepDataset("rollouts/", include_roles=("agent",))
-loader = DataLoader(ds, batch_size=32, collate_fn=pad_and_collate, num_workers=4)
-
-for batch in loader:
-    # batch["response_token_ids"]: LongTensor [B, T]
-    # batch["logprobs"], batch["ref_logprobs"]: FloatTensor [B, T]
-    # batch["advantages"], batch["rewards"], batch["values"]: FloatTensor [B, T]
-    # batch["reward_scalar"], batch["advantage_scalar"], ...: FloatTensor [B]
-    # batch["group_id"]: list[str | None]   <-- group baseline for GRPO
-    ...
+ds = to_hf_dataset(orl.read("rollouts/"), view="step")
+# ds has columns: prompt, response, reward, advantage, logprob, ref_logprob,
+# token_ids, token_logprobs, token_rewards, terminated, truncated, group_id
+# Pass directly to TRL's GRPOTrainer / DPOTrainer / PPOTrainer.
 ```
 
-`RolloutStepDataset` is an `IterableDataset`, so it streams from disk and shards across DataLoader workers automatically.
+**OpenRLHF — experience records with token-level masks:**
+
+```python
+import openroll as orl
+from openroll.adapters import to_openrlhf_experience
+
+for rollout in orl.read("rollouts/"):
+    exp = to_openrlhf_experience(rollout)
+    # exp = {"sequences", "attention_mask", "action_mask",
+    #        "action_log_probs", "base_action_log_probs", "values",
+    #        "returns", "advantages", "kl", "rewards"}
+```
+
+**verl — native Parquet input:**
+
+```bash
+openroll convert rollouts.openroll.jsonl rollouts.parquet
+# verl's data pipeline reads Parquet directly.
+```
+
+```python
+import openroll as orl
+from openroll.adapters import to_verl_dataproto_dict
+
+batch = [to_verl_dataproto_dict(r) for r in orl.read("rollouts/")]
+# Each dict carries: input_ids, responses, attention_mask, position_ids,
+# old_log_probs, ref_log_prob, values, token_level_scores, token_level_rewards,
+# advantages, returns
+```
+
+**NVIDIA NeMo-RL — OpenAI Responses API / BatchedDataDict:**
+
+```python
+import openroll as orl
+from openroll.adapters import to_nemo_rl_datum
+
+batch = [to_nemo_rl_datum(r) for r in orl.read("rollouts/")]
+# Each dict matches NeMo-RL's BatchedDataDict[DatumSpec] shape:
+# {"input": [...messages...], "output": [...messages...], "reward": float,
+#  "loss_mask", "advantages", ...}
+```
+
+See [`docs/framework-adapters.md`](docs/framework-adapters.md) for adapters against RLlib, TorchRL, Stable-Baselines3, Tianshou, CleanRL, Acme, Brax, PufferLib, Minari, and more.
+
+**Any other language (JAX / Rust / Go / TypeScript / Julia / ...):**
+
+Each line of an OpenRoll file is a self-contained JSON object conforming to [`schema/openroll-v0.1.0.schema.json`](schema/openroll-v0.1.0.schema.json). Generate bindings with `quicktype`, `prost-build`, or your language's JSON Schema tool.
 
 ---
 
@@ -240,19 +278,29 @@ Run `openroll <subcommand> -h` for full options.
 | File                                                         | What it shows                                                                 |
 | ------------------------------------------------------------ | ----------------------------------------------------------------------------- |
 | [`examples/reference.openroll.jsonc`](examples/reference.openroll.jsonc)         | Annotated reference (JSONC, every field documented). **Read this first.**     |
-| [`examples/single-turn-math.openroll.jsonl`](examples/single-turn-math.openroll.jsonl) | Single-turn math task with full per-token training signals.                  |
-| [`examples/multi-turn-tool-use.openroll.jsonl`](examples/multi-turn-tool-use.openroll.jsonl) | Two-turn agent that calls `web_search`, then answers.                         |
+| [`examples/single-turn-math.openroll.jsonl`](examples/single-turn-math.openroll.jsonl) | Single-turn Q&A math task with full per-token training signals.              |
+| [`examples/multi-turn-tool-use.openroll.jsonl`](examples/multi-turn-tool-use.openroll.jsonl) | Multi-turn agentic flow with a `web_search` tool call.                        |
 | [`examples/grpo-group.openroll.jsonl`](examples/grpo-group.openroll.jsonl)        | A group of 4 GRPO completions sharing `group_id`, with group-relative advantages. |
 | [`examples/gymnasium-cartpole.openroll.jsonl`](examples/gymnasium-cartpole.openroll.jsonl) | Classical RL — a CartPole episode written in OpenRoll.                        |
+| [`examples/coding-agent.openroll.jsonl`](examples/coding-agent.openroll.jsonl) | **Coding model** with file-read / file-write / patch tool calls and a unified-diff outcome. |
+| [`examples/trl-grpo.openroll.jsonl`](examples/trl-grpo.openroll.jsonl) | **HuggingFace TRL** — GRPO rollouts in TRL field shape (prompt / completion / token logprobs). |
+| [`examples/openrlhf-experience.openroll.jsonl`](examples/openrlhf-experience.openroll.jsonl) | **OpenRLHF** — experience record with sequences, attention mask, action mask, action_log_probs. |
+| [`examples/verl-rollout.openroll.jsonl`](examples/verl-rollout.openroll.jsonl) | **verl** — DataProto fields (input_ids, responses, old_log_probs, ref_log_prob, values, token-level scores). |
+| [`examples/nemo-rl-batched.openroll.jsonl`](examples/nemo-rl-batched.openroll.jsonl) | **NeMo-RL** — OpenAI Responses API messages + BatchedDataDict[DatumSpec] shape. |
 
 All examples validate:
 
 ```bash
 $ openroll validate examples/
+OK  examples/coding-agent.openroll.jsonl
 OK  examples/grpo-group.openroll.jsonl
 OK  examples/gymnasium-cartpole.openroll.jsonl
 OK  examples/multi-turn-tool-use.openroll.jsonl
+OK  examples/nemo-rl-batched.openroll.jsonl
+OK  examples/openrlhf-experience.openroll.jsonl
 OK  examples/single-turn-math.openroll.jsonl
+OK  examples/trl-grpo.openroll.jsonl
+OK  examples/verl-rollout.openroll.jsonl
 ```
 
 ---
@@ -273,44 +321,41 @@ Read [`SPECIFICATION.md`](SPECIFICATION.md) for the full standard. Highlights:
 
 ---
 
-## Related work
+## Framework adapters
 
-The space splits cleanly into three buckets that all leave the same gap in the middle. OpenRoll fills it.
+OpenRoll is an interchange format — it lives between rollout producers (sampling engines, environments, agent harnesses) and rollout consumers (RL trainers). Every framework below reads or writes OpenRoll JSONL via a thin adapter.
 
-| Format | Container | Scope | Per-token logprobs | GRPO `group_id` / advantages | Tool calls | Multi-turn | term/trunc split | Maturity |
-| --- | --- | --- | :---: | :---: | :---: | :---: | :---: | --- |
-| **OpenRoll** | JSONL | RL rollout for LLM training | ✅ | ✅ | ✅ (`tool_call_id`) | ✅ | ✅ | new |
-| [opentraces.ai](https://github.com/JayFarei/opentraces) | JSONL | Coding-agent trace publishing | ❌ | ❌ (session-id only) | ✅ | ✅ | terminal_state enum only | early v0.3 |
-| [cursor/agent-trace](https://github.com/cursor/agent-trace) | JSON | AI-vs-human code attribution | ❌ | ❌ | ❌ | ❌ | ❌ | RFC v0.1 |
-| [DeepMind RLDS](https://github.com/google-research/rlds) | TFDS / `tf.data` | Robotics & embodied offline RL | ❌ | ❌ | ❌ | ❌ | partial (`is_terminal`) | mature |
-| [Farama Minari](https://minari.farama.org/main/content/dataset_standards/) | HDF5 / Arrow | Offline gym RL | ❌ | ❌ | ❌ | ❌ | ✅ | mature, active |
-| D4RL | NumPy / HDF5 | Offline RL benchmarks | ❌ | ❌ | ❌ | ❌ | ✅ | **legacy → Minari** |
-| [HF TRL conventions](https://huggingface.co/docs/trl/dataset_formats) | Parquet / JSONL | SFT/DPO/PPO/GRPO **inputs** | ❌ (computed at train time) | ❌ (prompt-only) | ✅ | ✅ | ❌ | de-facto standard |
-| [OpenRLHF](https://github.com/OpenRLHF/OpenRLHF) | JSON | RL training inputs | ❌ | ❌ | ❌ | partial (`context_messages`) | ❌ | active |
-| [Inspect AI eval log](https://inspect.aisi.org.uk/eval-logs.html) | `.eval` binary / `.json` | UK AISI eval framework | ❌ | ❌ | ✅ | ✅ | ❌ | mature |
-| [OpenAI Evals](https://github.com/openai/evals) | JSONL | Eval inputs | ❌ | ❌ | via chat input | ✅ | ❌ | mature |
-| [OTel GenAI semconv](https://opentelemetry.io/docs/specs/semconv/gen-ai/) | OTLP spans | LLM observability | ❌ (`usage.*` only) | ❌ | ✅ | ✅ | ❌ | draft |
-| [Langfuse](https://langfuse.com/docs/tracing-data-model) / LangSmith / W&B Weave / [AgentOps](https://github.com/AgentOps-AI/agentops) | proprietary | LLM observability | ❌ | ❌ | ✅ | ✅ | ❌ | mature |
-| [MosaicML Streaming (MDS)](https://github.com/mosaicml/streaming) | MDS shards | Generic streaming container | n/a | n/a | n/a | n/a | n/a | mature container |
-| [Skywork-Reward](https://github.com/SkyworkAI/Skywork-Reward) | HF Parquet | Preference pairs (`chosen`/`rejected`) | ❌ | ❌ | ❌ | ✅ | ❌ | active |
+### LLM RL post-training
 
-### Where OpenRoll fits
+| Framework | Repo | Adapter route |
+| --- | --- | --- |
+| HuggingFace TRL | [huggingface/trl](https://github.com/huggingface/trl) | `to_hf_dataset(view="step")` → `GRPOTrainer` / `DPOTrainer` / `PPOTrainer` |
+| OpenRLHF | [OpenRLHF/OpenRLHF](https://github.com/OpenRLHF/OpenRLHF) | `to_openrlhf_experience(rollout)` → experience dict |
+| verl | [volcengine/verl](https://github.com/volcengine/verl) | `openroll convert ... .parquet` and `to_verl_dataproto_dict(rollout)` |
+| NVIDIA NeMo-RL | [NVIDIA-NeMo/RL](https://github.com/NVIDIA-NeMo/RL) | `to_nemo_rl_datum(rollout)` → BatchedDataDict |
+| AReaL | [inclusionAI/AReaL](https://github.com/inclusionAI/AReaL) | trajectory dict (HF-padded) |
+| slime | [THUDM/slime](https://github.com/THUDM/slime) | Data Buffer custom-data interface |
+| ms-swift | [modelscope/ms-swift](https://github.com/modelscope/ms-swift) | HF datasets path |
+| Open-Instruct | [allenai/open-instruct](https://github.com/allenai/open-instruct) | preference / RLVR dataset adapter |
+| LLaMA-Factory | [hiyouga/LLaMA-Factory](https://github.com/hiyouga/LLaMA-Factory) | alpaca / sharegpt JSON |
+| ROLL | [alibaba/ROLL](https://github.com/alibaba/ROLL) | strategy-abstracted rollouts |
+| rLLM | [rllm-org/rllm](https://github.com/rllm-org/rllm) | `@rllm.rollout` traces |
 
-1. **Classical offline-RL formats** (RLDS, Minari, D4RL) nail `terminations` / `truncations` and per-step `(observation, action, reward)` arrays — but were built for fixed-shape tensor envs. Minari's `EpisodeData` is literally `(observations, actions, rewards, terminations, truncations, infos)` and stops there. No `messages`, no `tool_call_id`, no `logprobs`.
+### Classical / general-purpose RL
 
-2. **LLM observability formats** (OpenTelemetry GenAI, Langfuse, LangSmith, Weave, AgentOps, opentraces.ai, cursor/agent-trace) are excellent at capturing the multi-turn + tool surface — but by design they record *one* policy's behavior for humans/dashboards, not training tensors. None of them carries `logprobs`, `ref_logprobs`, `values`, `advantages`, or `action_mask`.
+| Framework | Repo | Adapter route |
+| --- | --- | --- |
+| Ray RLlib | [ray-project/ray](https://github.com/ray-project/ray) | `to_rllib_episode(rollout)` (offline ingestion) |
+| Stable-Baselines3 | [DLR-RM/stable-baselines3](https://github.com/DLR-RM/stable-baselines3) | `ReplayBuffer` ingestion |
+| Tianshou | [thu-ml/tianshou](https://github.com/thu-ml/tianshou) | OpenRoll → Minari → `ReplayBuffer.from_hdf5` |
+| TorchRL | [pytorch/rl](https://github.com/pytorch/rl) | `to_torchrl_tensordict(rollouts)` with `traj_ids` |
+| CleanRL | [vwxyzjn/cleanrl](https://github.com/vwxyzjn/cleanrl) | in-memory rollout buffer |
+| Acme | [google-deepmind/acme](https://github.com/google-deepmind/acme) | Reverb `TimeStep` |
+| Brax | [google/brax](https://github.com/google/brax) | JAX-array episodes |
+| PufferLib | [PufferAI/PufferLib](https://github.com/PufferAI/PufferLib) | vectorized rollout segments |
+| Minari | [Farama-Foundation/Minari](https://github.com/Farama-Foundation/Minari) | `to_minari_step_iter(rollout)` |
 
-3. **HF TRL / OpenRLHF dataset conventions** (`prompt`, `chosen`, `rejected`, `messages`, `tools`) are the de-facto **training-input** format — but they're pre-rollout: they describe a prompt to roll out *from*, not the rollout itself. TRL's `GRPOTrainer` takes a prompt-only dataset; the group, advantages, and ref-logprobs are computed in-memory and discarded.
-
-OpenRoll fills the **post-rollout, pre-loss** slot none of those own — a serialized rollout that already contains every signal a GRPO/PPO/DPO trainer needs to compute its loss without re-running anything:
-
-- `logprobs` + `ref_logprobs` + `action_mask` → trainer-ready, no re-tokenize / re-score
-- `group_id` → GRPO grouping is a column, not a runtime accident
-- `terminated` / `truncated` split → borrows the offline-RL discipline LLM formats consistently drop
-- `tool_call_id` pairing + content-addressed `system_prompts` → keeps the multi-turn discipline RLDS / Minari can't express
-- JSONL → composes with MDS shards or HF Parquet downstream
-
-The closest neighbors are **RLDS / Minari** (same structural ambition, different domain) and **TRL conventions** (same domain, doesn't cover the rollout itself). MDS, Argilla, Skywork-Reward, and the observability formats are orthogonal — OpenRoll JSONL composes with all of them.
+See [`docs/framework-adapters.md`](docs/framework-adapters.md) for code-level sketches.
 
 ---
 
@@ -329,7 +374,12 @@ The closest neighbors are **RLDS / Minari** (same structural ambition, different
 │   ├── single-turn-math.openroll.jsonl
 │   ├── multi-turn-tool-use.openroll.jsonl
 │   ├── grpo-group.openroll.jsonl
-│   └── gymnasium-cartpole.openroll.jsonl
+│   ├── gymnasium-cartpole.openroll.jsonl
+│   ├── coding-agent.openroll.jsonl             # coding model with file edit tools
+│   ├── trl-grpo.openroll.jsonl                 # HuggingFace TRL field shape
+│   ├── openrlhf-experience.openroll.jsonl      # OpenRLHF experience record
+│   ├── verl-rollout.openroll.jsonl             # verl DataProto fields
+│   └── nemo-rl-batched.openroll.jsonl          # NeMo-RL BatchedDataDict / Responses API
 ├── python/
 │   ├── pyproject.toml
 │   ├── openroll/
@@ -338,14 +388,15 @@ The closest neighbors are **RLDS / Minari** (same structural ambition, different
 │   │   ├── reader.py                           # streaming JSONL reader
 │   │   ├── writer.py                           # streaming JSONL writer (gzip-aware)
 │   │   ├── validator.py                        # schema + semantic validation
-│   │   ├── adapters.py                         # Gym / TRL / HF Datasets adapters
-│   │   ├── torch.py                            # PyTorch IterableDatasets + collator
+│   │   ├── adapters.py                         # framework adapters
 │   │   └── cli.py                              # `openroll` CLI
 │   └── tests/
 │       ├── test_round_trip.py
-│       └── test_adapters.py
+│       ├── test_adapters.py
+│       └── test_framework_compat.py            # TRL / OpenRLHF / verl / NeMo-RL
 └── docs/
-    └── parquet-projection.md                   # rules for the Parquet logical schema
+    ├── parquet-projection.md                   # rules for the Parquet logical schema
+    └── framework-adapters.md                   # adapter sketches per framework
 ```
 
 ---
@@ -356,7 +407,7 @@ The closest neighbors are **RLDS / Minari** (same structural ambition, different
 PYTHONPATH=python python3 -m pytest python/tests/ -q
 ```
 
-The test suite validates every bundled example, round-trips them through the writer/reader, and exercises both adapters.
+The test suite validates every bundled example, round-trips them through the writer/reader, exercises every adapter, and runs framework-compatibility tests for HuggingFace TRL, OpenRLHF, verl, and NVIDIA NeMo-RL.
 
 ---
 
@@ -383,4 +434,4 @@ See [`LICENSE`](LICENSE).
 
 ## Acknowledgements
 
-OpenRoll learned from prior art: [opentraces.ai](https://opentraces.ai) and [JayFarei/opentraces](https://github.com/JayFarei/opentraces) for agent-trace shape, [cursor/agent-trace](https://github.com/cursor/agent-trace) for code attribution and `provider/model-name` conventions, [Gymnasium](https://gymnasium.farama.org) for the terminated/truncated split, [DeepMind RLDS](https://github.com/google-research/rlds) and [Farama Minari](https://minari.farama.org) for offline-RL dataset shape, and [TRL](https://huggingface.co/docs/trl) / [verl](https://verl.readthedocs.io) / [OpenRLHF](https://github.com/OpenRLHF/OpenRLHF) for what trainers actually need to consume. See [Related work](#related-work) for the full comparison.
+OpenRoll is published by Open Agent Labs and is developed in the open. Contributions, adapter PRs, and SDK ports in other languages are welcome.

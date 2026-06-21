@@ -133,6 +133,18 @@ class TopKToken(_Base):
     logprob: float
 
 
+class Snippet(_Base):
+    """A quoted code snippet — e.g. a search result a coding agent surfaced
+    from a tool call. Useful when downstream readers want to recover what the
+    agent was looking at without re-running tools."""
+
+    path: str
+    start_line: int | None = None
+    end_line: int | None = None
+    content: str
+    language: str | None = None
+
+
 StepRole = Literal["agent", "user", "tool", "env", "system"]
 
 
@@ -181,6 +193,7 @@ class Step(_Base):
     tokens_used: TokenUsage | None = None
     wall_time_ms: int | None = None
     timestamp: datetime | None = None
+    snippets: list[Snippet] | None = None
     info: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -198,6 +211,8 @@ class Task(_Base):
     dataset_index: int | None = None
     expected_answer: str | None = None
     rubric: str | None = None
+    repository: str | None = None
+    base_commit: str | None = None
     task_metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -276,6 +291,7 @@ class Outcome(_Base):
     final_reward: float | None = None
     reward_source: RewardSource | None = None
     judge: Judge | None = None
+    patch: str | None = None
     description: str | None = None
 
 

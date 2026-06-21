@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import os
 import tempfile
-from datetime import datetime, timezone
 
 import openroll as orl
 from openroll.adapters import from_gymnasium_episode, from_trl_grpo_outputs
