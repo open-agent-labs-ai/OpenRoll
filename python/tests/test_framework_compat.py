@@ -31,8 +31,9 @@ EXAMPLES = REPO / "examples"
 
 
 def test_trl_example_validates() -> None:
+    """Bundled TRL example validates against the JSON Schema."""
     failures = validate_file(EXAMPLES / "trl-grpo.openroll.jsonl")
-    assert failures == [], failures
+    assert not failures, failures
 
 
 def test_trl_projection_has_all_required_fields() -> None:
@@ -75,8 +76,9 @@ def test_trl_token_arrays_align() -> None:
 
 
 def test_openrlhf_example_validates() -> None:
+    """Bundled OpenRLHF example validates against the JSON Schema."""
     failures = validate_file(EXAMPLES / "openrlhf-experience.openroll.jsonl")
-    assert failures == [], failures
+    assert not failures, failures
 
 
 def test_openrlhf_projection_has_all_required_fields() -> None:
@@ -111,8 +113,9 @@ def test_openrlhf_projection_has_all_required_fields() -> None:
 
 
 def test_verl_example_validates() -> None:
+    """Bundled verl example validates against the JSON Schema."""
     failures = validate_file(EXAMPLES / "verl-rollout.openroll.jsonl")
-    assert failures == [], failures
+    assert not failures, failures
 
 
 def test_verl_projection_has_all_required_fields() -> None:
@@ -148,8 +151,9 @@ def test_verl_projection_has_all_required_fields() -> None:
 
 
 def test_nemo_rl_example_validates() -> None:
+    """Bundled NeMo-RL example validates against the JSON Schema."""
     failures = validate_file(EXAMPLES / "nemo-rl-batched.openroll.jsonl")
-    assert failures == [], failures
+    assert not failures, failures
 
 
 def test_nemo_rl_projection_has_all_required_fields() -> None:
@@ -178,8 +182,9 @@ def test_nemo_rl_projection_has_all_required_fields() -> None:
 
 
 def test_coding_agent_example_validates() -> None:
+    """Bundled coding-agent example validates against the JSON Schema."""
     failures = validate_file(EXAMPLES / "coding-agent.openroll.jsonl")
-    assert failures == [], failures
+    assert not failures, failures
 
 
 def test_coding_agent_carries_modern_llm_features() -> None:
