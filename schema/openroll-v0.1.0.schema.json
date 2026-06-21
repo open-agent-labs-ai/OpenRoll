@@ -94,6 +94,8 @@
         "dataset_index": { "type": ["integer", "null"] },
         "expected_answer": { "type": ["string", "null"], "description": "Ground-truth answer for verifiable-reward tasks." },
         "rubric": { "type": ["string", "null"], "description": "Judge rubric or grading criteria." },
+        "repository": { "type": ["string", "null"], "description": "For coding tasks: repository URL or path the agent operates on." },
+        "base_commit": { "type": ["string", "null"], "description": "For coding tasks: VCS revision the agent started from." },
         "task_metadata": { "type": "object", "additionalProperties": true }
       },
       "required": ["description"]
@@ -314,6 +316,11 @@
         "tokens_used": { "$ref": "#/$defs/TokenUsage" },
         "wall_time_ms": { "type": ["integer", "null"] },
         "timestamp": { "type": ["string", "null"], "format": "date-time" },
+        "snippets": {
+          "type": ["array", "null"],
+          "description": "Code snippets the agent quoted at this step (typically from a search/read tool). Optional, useful for coding agents.",
+          "items": { "$ref": "#/$defs/Snippet" }
+        },
         "info": {
           "type": "object",
           "additionalProperties": true,
@@ -321,6 +328,19 @@
         }
       },
       "required": ["step_index", "role"]
+    },
+    "Snippet": {
+      "type": "object",
+      "description": "A quoted code snippet — e.g. a search result a coding agent surfaced from a tool call. Optional; useful when downstream readers want to recover what the agent was looking at without re-running tools.",
+      "additionalProperties": false,
+      "properties": {
+        "path": { "type": "string", "description": "File path (repo-relative)." },
+        "start_line": { "type": ["integer", "null"], "description": "1-indexed start line." },
+        "end_line": { "type": ["integer", "null"], "description": "1-indexed end line (inclusive)." },
+        "content": { "type": "string" },
+        "language": { "type": ["string", "null"], "description": "Language identifier hint (e.g. 'python', 'rust'). Optional." }
+      },
+      "required": ["path", "content"]
     },
     "Action": {
       "type": "object",
@@ -373,6 +393,7 @@
           "enum": ["rl_environment", "verifier", "judge", "human", "rule_based", "preference", "mixed"]
         },
         "judge": { "$ref": "#/$defs/Judge" },
+        "patch": { "type": ["string", "null"], "description": "For coding tasks: a unified diff describing the net change the agent made to the repository." },
         "description": { "type": ["string", "null"] }
       }
     },

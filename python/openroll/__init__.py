@@ -1,6 +1,10 @@
-"""OpenRoll — open standard for recording RL rollouts (trajectories).
+"""OpenRoll — the definitive open standard for recording RL rollouts and agent trajectories.
 
-See https://github.com/open-agent-labs/openroll for the full specification.
+OpenRoll is a framework-agnostic JSONL interchange format. The core SDK has
+no ML-backend dependency; framework integrations are opt-in extras. See the
+README's "Framework adapters" section for sketches against TRL, OpenRLHF,
+verl, NeMo-RL, AReaL, slime, RLlib, TorchRL, SB3, Tianshou, CleanRL, Acme,
+Brax, PufferLib, and Minari.
 
 Quick start:
 
@@ -17,9 +21,20 @@ Quick start:
     # validate
     orl.validate_file("rollouts.openroll.jsonl")
 
-    # PyTorch
-    from openroll.torch import RolloutDataset
-    ds = RolloutDataset("rollouts.openroll.jsonl")
+Framework adapters (each only imports its heavy dependency on first use):
+
+    from openroll.adapters import (
+        to_hf_dataset,            # HuggingFace TRL / Open-Instruct / ms-swift / LLaMA-Factory
+        to_openrlhf_experience,   # OpenRLHF
+        to_verl_dataproto_dict,   # verl
+        to_nemo_rl_datum,         # NVIDIA NeMo-RL
+    )
+
+For non-Python consumers, parse the JSONL with the JSON library of your
+choice — there is no Python on the wire. See the JSON Schema at
+schema/openroll-v0.1.0.schema.json.
+
+See https://github.com/open-agent-labs-ai/OpenRoll for the full specification.
 """
 from openroll.models import (
     Action,
@@ -33,6 +48,7 @@ from openroll.models import (
     Policy,
     Rollout,
     SamplingParams,
+    Snippet,
     Step,
     Task,
     Tokenizer,
@@ -70,6 +86,7 @@ __all__ = [
     "Environment",
     "Policy",
     "SamplingParams",
+    "Snippet",
     "Tokenizer",
     "Outcome",
     "Judge",

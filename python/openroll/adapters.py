@@ -326,3 +326,155 @@ def _jsonable(x: Any) -> Any:
     if isinstance(x, dict):
         return {k: _jsonable(v) for k, v in x.items()}
     return x
+
+
+# --------------------------------------------------------------------------- #
+# Framework-specific projections (pure-Python; no heavy deps)
+# --------------------------------------------------------------------------- #
+
+
+def to_trl_grpo_dict(rollout: Rollout) -> dict[str, Any]:
+    """Project one Rollout into a HuggingFace TRL GRPO-style dict.
+
+    Output keys mirror what TRL's `rollout_func` returns:
+        prompt, completion, completion_ids, reward, advantage,
+        old_logprobs, ref_logprobs, group_id
+
+    Reward functions in TRL receive `(prompts, completions, **kwargs)`; this
+    projection is what each row carries before batching.
+    """
+    if not rollout.steps:
+        raise ValueError("rollout has no steps")
+    s = rollout.steps[0]
+    prompt = s.observation if isinstance(s.observation, str) else (
+        rollout.task.instruction or rollout.task.description
+    )
+    completion = s.action.text if s.action and s.action.text else ""
+    return {
+        "prompt": prompt,
+        "completion": completion,
+        "completion_ids": list(s.token_ids) if s.token_ids else None,
+        "reward": float(s.reward) if s.reward is not None else None,
+        "advantage": float(s.advantage) if s.advantage is not None else None,
+        "old_logprobs": list(s.token_logprobs) if s.token_logprobs else None,
+        "ref_logprobs": list(s.token_ref_logprobs) if s.token_ref_logprobs else None,
+        "group_id": rollout.group_id,
+        "rollout_id": rollout.rollout_id,
+    }
+
+
+def to_openrlhf_experience(rollout: Rollout) -> dict[str, Any]:
+    """Project one Rollout into an OpenRLHF experience dict.
+
+    Output keys mirror OpenRLHF's `Experience` record:
+        sequences, attention_mask, action_mask, action_log_probs,
+        base_action_log_probs, values, returns, advantages, kl, rewards
+
+    All fields are Python lists (no torch tensors). Callers wrap with
+    torch.tensor at training time.
+    """
+    if not rollout.steps:
+        raise ValueError("rollout has no steps")
+    s = rollout.steps[0]
+    prompt_ids = list(s.prompt_token_ids or [])
+    resp_ids = list(s.token_ids or [])
+    sequences = prompt_ids + resp_ids
+    attention_mask = list(s.attention_mask) if s.attention_mask else [1] * len(sequences)
+    action_mask = list(s.action_mask) if s.action_mask else (
+        [0] * len(prompt_ids) + [1] * len(resp_ids)
+    )
+    return {
+        "sequences": sequences,
+        "attention_mask": attention_mask,
+        "action_mask": action_mask,
+        "action_log_probs": list(s.token_logprobs) if s.token_logprobs else [],
+        "base_action_log_probs": list(s.token_ref_logprobs) if s.token_ref_logprobs else [],
+        "values": list(s.token_values) if s.token_values else [],
+        "returns": [s.return_] if s.return_ is not None else [],
+        "advantages": list(s.token_advantages) if s.token_advantages else (
+            [s.advantage] if s.advantage is not None else []
+        ),
+        "kl": [s.kl_to_ref] if s.kl_to_ref is not None else [],
+        "rewards": list(s.token_rewards) if s.token_rewards else (
+            [s.reward] if s.reward is not None else []
+        ),
+        "rollout_id": rollout.rollout_id,
+        "group_id": rollout.group_id,
+    }
+
+
+def to_verl_dataproto_dict(rollout: Rollout) -> dict[str, Any]:
+    """Project one Rollout into a verl `DataProto`-compatible dict.
+
+    Output keys mirror verl's `DataProto.batch` tensor names:
+        input_ids, responses, attention_mask, position_ids,
+        old_log_probs, ref_log_prob, values, token_level_scores,
+        token_level_rewards, advantages, returns
+
+    All fields are Python lists. Callers stack into torch / numpy tensors
+    at training time.
+    """
+    if not rollout.steps:
+        raise ValueError("rollout has no steps")
+    s = rollout.steps[0]
+    prompt_ids = list(s.prompt_token_ids or [])
+    resp_ids = list(s.token_ids or [])
+    full = prompt_ids + resp_ids
+    attn = list(s.attention_mask) if s.attention_mask else [1] * len(full)
+    return {
+        "input_ids": prompt_ids,
+        "responses": resp_ids,
+        "attention_mask": attn,
+        "position_ids": list(range(len(full))),
+        "old_log_probs": list(s.token_logprobs) if s.token_logprobs else [],
+        "ref_log_prob": list(s.token_ref_logprobs) if s.token_ref_logprobs else [],
+        "values": list(s.token_values) if s.token_values else [],
+        "token_level_scores": list(s.token_rewards) if s.token_rewards else [],
+        "token_level_rewards": list(s.token_rewards) if s.token_rewards else [],
+        "advantages": list(s.token_advantages) if s.token_advantages else (
+            [s.advantage] if s.advantage is not None else []
+        ),
+        "returns": [s.return_] if s.return_ is not None else [],
+        "rollout_id": rollout.rollout_id,
+        "group_id": rollout.group_id,
+    }
+
+
+def to_nemo_rl_datum(rollout: Rollout) -> dict[str, Any]:
+    """Project one Rollout into a NVIDIA NeMo-RL `DatumSpec`-shaped dict.
+
+    NeMo-RL standardizes on the OpenAI Responses API shape: `input` is the
+    pre-assistant message list, `output` is the assistant turns. This adapter
+    splits `rollout.messages` accordingly.
+
+    Output keys:
+        input, output, reward, loss_mask, advantages, model
+    """
+    msgs = rollout.messages or []
+    inp = [m.model_dump(mode="json", exclude_none=True) for m in msgs if m.role != "assistant"]
+    out = [m.model_dump(mode="json", exclude_none=True) for m in msgs if m.role == "assistant"]
+    reward = (
+        rollout.outcome.final_reward if rollout.outcome and rollout.outcome.final_reward is not None
+        else (rollout.metrics.episode_return if rollout.metrics else None)
+    )
+    # loss_mask is over the action tokens of the last agent step
+    last_agent_step = next((s for s in reversed(rollout.steps) if s.role == "agent"), None)
+    loss_mask: list[int] = []
+    if last_agent_step is not None and last_agent_step.action_mask:
+        loss_mask = list(last_agent_step.action_mask)
+    elif last_agent_step is not None and last_agent_step.token_ids:
+        loss_mask = [1] * len(last_agent_step.token_ids)
+    advantages = (
+        list(last_agent_step.token_advantages)
+        if last_agent_step is not None and last_agent_step.token_advantages
+        else ([last_agent_step.advantage] if last_agent_step is not None and last_agent_step.advantage is not None else [])
+    )
+    return {
+        "input": inp,
+        "output": out,
+        "reward": reward,
+        "loss_mask": loss_mask,
+        "advantages": advantages,
+        "model": rollout.agent.model,
+        "rollout_id": rollout.rollout_id,
+    }
