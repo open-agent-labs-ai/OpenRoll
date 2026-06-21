@@ -22,6 +22,11 @@ SAMPLES = [
     EXAMPLES / "multi-turn-tool-use.openroll.jsonl",
     EXAMPLES / "grpo-group.openroll.jsonl",
     EXAMPLES / "gymnasium-cartpole.openroll.jsonl",
+    EXAMPLES / "coding-agent.openroll.jsonl",
+    EXAMPLES / "trl-grpo.openroll.jsonl",
+    EXAMPLES / "openrlhf-experience.openroll.jsonl",
+    EXAMPLES / "verl-rollout.openroll.jsonl",
+    EXAMPLES / "nemo-rl-batched.openroll.jsonl",
 ]
 
 

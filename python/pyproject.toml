@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "openroll"
 version = "0.1.0"
-description = "OpenRoll — open standard for recording RL rollouts (trajectories) for training LLMs."
+description = "OpenRoll — the definitive framework-agnostic open standard for recording RL rollouts and agent trajectories. Adapters for HuggingFace TRL, OpenRLHF, verl, NVIDIA NeMo-RL, AReaL, slime, RLlib, TorchRL, Stable-Baselines3, Tianshou, CleanRL, Acme, Brax, PufferLib, Minari."
 readme = "../README.md"
 requires-python = ">=3.9"
 license = { text = "Apache-2.0" }
@@ -16,14 +16,29 @@ keywords = [
     "llm",
     "rollout",
     "trajectory",
-    "trace",
+    "agent",
+    "agentic",
+    "tool-use",
+    "coding-model",
     "rlhf",
+    "rlvr",
     "ppo",
     "grpo",
     "rloo",
     "dpo",
-    "agent",
     "openroll",
+    "trl",
+    "openrlhf",
+    "verl",
+    "nemo-rl",
+    "areal",
+    "rllib",
+    "torchrl",
+    "stable-baselines3",
+    "tianshou",
+    "cleanrl",
+    "minari",
+    "interchange-format",
 ]
 classifiers = [
     "Development Status :: 3 - Alpha",
@@ -47,12 +62,10 @@ dependencies = [
 [project.optional-dependencies]
 validate = ["jsonschema>=4.18"]
 parquet = ["pyarrow>=14.0"]
-torch = ["torch>=2.0"]
 hf = ["datasets>=2.14"]
 all = [
     "jsonschema>=4.18",
     "pyarrow>=14.0",
-    "torch>=2.0",
     "datasets>=2.14",
 ]
 dev = [
@@ -62,9 +75,9 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/open-agent-labs/openroll"
-Specification = "https://github.com/open-agent-labs/openroll/blob/main/SPECIFICATION.md"
-Issues = "https://github.com/open-agent-labs/openroll/issues"
+Homepage = "https://github.com/open-agent-labs-ai/OpenRoll"
+Specification = "https://github.com/open-agent-labs-ai/OpenRoll/blob/main/SPECIFICATION.md"
+Issues = "https://github.com/open-agent-labs-ai/OpenRoll/issues"
 
 [project.scripts]
 openroll = "openroll.cli:main"
